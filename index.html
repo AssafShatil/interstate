@@ -32,7 +32,7 @@
     box-sizing: border-box;
     display: flex; flex-direction: column; align-items: center;
     padding-inline: 16px;
-    padding-block: 16px 12px;
+    padding-block: 52px 20px;
     gap: 8px;
   }
   .wordmark {
@@ -43,11 +43,19 @@
   }
   .stage {
     flex: 1 1 auto; min-height: 0; width: 100%;
+    box-sizing: border-box;
     display: flex; align-items: center; justify-content: center;
   }
-  canvas { display: block; touch-action: none; max-width: 100%; }
+  canvas { display: block; touch-action: none; max-width: 100%; transform: translateY(-38px); }   /* ≈ 1 cm up */
   canvas:focus-visible { outline: 1px solid var(--label); outline-offset: 4px; border-radius: 50%; }
 
+  .wordmark, .hint, .hud { transition: opacity 1.2s ease; }
+  body.rest .wordmark, body.rest .hint { opacity: 0; }
+  .hud { height: 44px; display: grid; justify-items: center; align-content: center; gap: 4px; opacity: 0; }
+  .hud.show { opacity: 1; transition: opacity 0.15s ease; }
+  .hud-name { font-size: 10px; letter-spacing: 0.28em; padding-left: 0.28em; }
+  .hud-val { font-size: 18px; font-weight: 500; letter-spacing: 0.04em; font-variant-numeric: tabular-nums; }
+  .hint { margin: 0; min-height: 16px; font-size: 10px; letter-spacing: 0.14em; text-align: center; }
   .readouts {
     width: 100%; max-width: 420px;
     display: grid; gap: 12px;
@@ -79,29 +87,7 @@
     <canvas id="dial" tabindex="0" aria-label="Three concentric knobs. Tap the centre to start or stop. Press a ring and turn it. Arrow keys and Page Up or Down also turn them."></canvas>
   </div>
 
-  <section class="readouts" aria-live="polite">
-    <div class="row outer">
-      <span class="bar"></span>
-      <div><div class="name">01 / PARASYMPATHETIC SYNC</div><div class="cap">SYNC · α BINAURAL · CARRIER 220 Hz</div></div>
-      <span class="val" id="v-outer">10.5 Hz</span>
-    </div>
-    <div class="row middle">
-      <span class="bar"></span>
-      <div><div class="name">02 / LIBIDO CORE</div><div class="cap" id="c-middle">DRIVE · γ   BROWN + PINK WAVES   LPF 794 Hz</div></div>
-      <span class="val" id="v-middle">36.0 Hz</span>
-    </div>
-    <div class="row core">
-      <span class="bar"></span>
-      <div><div class="name">03 / PELVIC CADENCE</div><div class="cap" id="c-core">SUB WAVE · ONE EVERY 9.1 s</div></div>
-      <span class="val" id="v-core">6.6 /min</span>
-    </div>
-    <div class="status">
-      <span><span class="dot" id="dot"></span><span id="state">TAP CORE TO BEGIN</span></span>
-      <span>HEADPHONES ON</span>
-    </div>
-  </section>
-
-  <p class="note">Browser preview of the Interstate iOS app. Press a ring and turn it like a knob, clockwise or anticlockwise. Two fingers turn two rings. Haptics need the native app. On iPhone, turn the ring/silent switch off if you hear nothing.</p>
+  <p class="hint" id="hint">Headphones on. Tap the centre to begin.</p>
 </div>
 
 <script>
@@ -111,123 +97,177 @@
    AudioWorklet via Function.prototype.toString().
    ========================================================================= */
 class InterstateKernel {
+  // Port of prototypes/interstate_palette_v4.scd — the four approved layers:
+  //   DRONE      \wellnessDrone: L 55 Hz, R 55 + beat (binaural), 2nd partial, 0.045 Hz breath
+  //   HEARTBEAT  \ist_heart (Dream Timbre Mvt V): 55 Hz lub, SinOsc-shaped .pow(4), soft drive
+  //   CLUSTER    \ist_cluster: the box ×2, one voice per pitch, 3 drifting oscs each, own swells
+  //   AIR        \ist_air (Dream Timbre \dtAirSwell): stochastic dark noise swells
+  // Ring 01 = drone beat · 02 = air density/brightness · 03 = cluster presence · 04 (centre) = heartbeat BPM.
   constructor(sr) {
     this.sr = sr;
-    // tuning
-    this.alphaC = 220; this.gammaC = 330; this.subHz = 110; this.subOctHz = 55;
-    this.alphaLevel = 0.24; this.gammaLevel = 0.10; this.brownLevel = 0.26; this.pinkLevel = 0.18;
-    this.subLevel = 0.32;
-    this.waveFloor = 0.08;       // each layer fades almost to silence between waves
-    this.subFloor = 0.12;
-    this.filterMod = 0.35;       // LPF opens up to +35 % on noise crests
-    // Independent, unsynchronised waves: incommensurate periods, each with its own
-    // slow ±15 % rate drift and a random starting point.  [period s, drift Hz]
-    const W = [[13.7, 0.011], [17.3, 0.017], [11.1, 0.013], [14.9, 0.009]];   // alpha, gamma, brown, pink
-    this.waves = W.map(([period, drift]) => ({ inc: 1 / period, drift, ph: Math.random(), dph: Math.random() * 6.283 }));
-    // targets + smoothed values
-    this.t = { alpha: 10.5, gamma: 36, cutoff: 794, cadence: 0.11, master: 0 };
-    this.alpha = 10.5; this.gamma = 36; this.cutoff = 794; this.cadence = 0.11; this.master = 0;
-    this.pc = 1 - Math.exp(-1 / (0.050 * sr));
-    this.cc = 1 - Math.exp(-1 / (1.5 * sr));      // cadence glides slowly: no sudden rushes
-    this.mc = 1 - Math.exp(-1 / (1.2 * sr));      // master fades over ~1–2 s
-    // phases
-    this.aL = 0; this.aR = 0; this.gL = 0; this.gR = 0; this.sub = 0; this.subO = 0;
-    this.cadencePhase = 0.5;                      // start in a trough: the first wave rises in
-    this.env = new Float64Array(5);               // last envelopes: alpha, gamma, brown, pink
-    this.envNext = new Float64Array(5);           // preallocated: no garbage on the audio thread
-    // noise
-    this.brL = 0; this.brR = 0;
-    this.pkL = new Float64Array(7); this.pkR = new Float64Array(7);
     this.rng = 0x9E3779B9 >>> 0;
-    // biquad
-    this.b0 = 0; this.b1 = 0; this.b2 = 0; this.a1 = 0; this.a2 = 0;
-    this.z1L = 0; this.z2L = 0; this.z1R = 0; this.z2R = 0; this.lastCut = -1;
-    this.updateFilter(this.cutoff);
+    this.t = { beat: 1.2, air: 0.5, cluster: 0.5, bpm: 45, master: 0 };
+    this.beat = 1.2; this.air = 0.5; this.cluster = 0.5; this.bpm = 45; this.master = 0;
+    // drone
+    this.dL = 0; this.dR = 0; this.dL2 = 0; this.dR2 = 0; this.breathPh = 0.75; this.breath = 0.45;
+    // heartbeat
+    this.hPh = 0.75; this.lub = 0; this.hWander = this.lfn(0.02, 0.92, 1.08); this.heartHz = 0.75;
+    // cluster: your box, one octave up
+    const box = [27.5, 43.65, 46.25, 55.0, 65.41, 69.30, 82.41];
+    this.voices = box.map(f0 => ({
+      f: f0 * 2,
+      wave: { inc: 1 / (18 + this.rand() * 14), ph: this.rand() },
+      oscs: [0, 1, 2].map(() => ({
+        ph: this.rand(),
+        det: this.lfn(0.001 + this.rand() * 0.008, -0.012, 0.012),
+        amp: this.lfn(0.003 + this.rand() * 0.009, 0.3, 1.0),
+        saw: this.lfn(0.002 + this.rand() * 0.004, 0.0, 0.25),
+        pan: this.lfn(0.001 + this.rand() * 0.007, -0.6, 0.6),
+        gl: 0, gr: 0, inc: 0, sw: 0
+      })),
+      env: 0
+    }));
+    this.clLpL = 0; this.clLpR = 0; this.clA = 1 - Math.exp(-2 * Math.PI * 1400 / sr);
+    // air swells
+    this.swells = []; this.nextSwell = 1.5; this.airEnv = 0;
+    this.env = new Float64Array(4);   // telemetry: drone breath, air, heart, cluster
+  }
+  rand() {
+    let x = this.rng; x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; x >>>= 0; this.rng = x;
+    return x / 4294967296;
+  }
+  white() { return this.rand() * 2 - 1; }
+  lfn(rate, lo, hi) { return { a: lo + (hi - lo) * Math.random(), b: lo + (hi - lo) * Math.random(), t: 0, rate, lo, hi, v: 0 }; }
+  stepLfn(o, dtBlock) {        // LFNoise1-style: linear ramps between random values
+    o.t += o.rate * dtBlock;
+    while (o.t >= 1) { o.t -= 1; o.a = o.b; o.b = o.lo + (o.hi - o.lo) * this.rand(); }
+    o.v = o.a + (o.b - o.a) * o.t; return o.v;
   }
   setTargets(o) { Object.assign(this.t, o); }
-  white() {
-    let x = this.rng;
-    x ^= x << 13; x >>>= 0;
-    x ^= x >>> 17;
-    x ^= x << 5; x >>>= 0;
-    this.rng = x;
-    return x * (2 / 4294967295) - 1;
+  spawnSwell() {
+    const air = this.air, dark = 1 - 0.45 * air;           // more air = a little brighter
+    const pick = this.rand();
+    let ch;                                                // 0 = A, 1 = B, 2 = C (your characters)
+    if (this.rand() < dark) ch = pick > 0.5 ? 2 : 0;
+    else ch = pick > 0.6 ? 2 : (pick > 0.32 ? 1 : 0);
+    this.swells.push({
+      ch, t: 0, att: 6 + this.rand() * 8, rel: 8 + this.rand() * 10,
+      reg: 0.55 + this.rand() * (1.8 - 0.8 * dark - 0.55),
+      pan: this.rand() * 1.6 - 0.8, drift: this.lfn(0.03 + this.rand() * 0.05, -0.25, 0.25),
+      br: 0, pk: new Float64Array(7), lp1: [0, 0], lp2: [0, 0], hp: [0, 0], amp: 0.45 + 0.4 * air
+    });
   }
-  pink(s, w) {   // Paul Kellet refined
-    s[0] = 0.99886 * s[0] + w * 0.0555179;
-    s[1] = 0.99332 * s[1] + w * 0.0750759;
-    s[2] = 0.96900 * s[2] + w * 0.1538520;
-    s[3] = 0.86650 * s[3] + w * 0.3104856;
-    s[4] = 0.55000 * s[4] + w * 0.5329522;
-    s[5] = -0.7616 * s[5] - w * 0.0168980;
-    const p = s[0] + s[1] + s[2] + s[3] + s[4] + s[5] + s[6] + w * 0.5362;
-    s[6] = w * 0.115926;
-    return p * 0.11;
-  }
-  updateFilter(fc) {   // RBJ low-pass, Q 0.707
-    const f = Math.min(Math.max(fc, 20), this.sr * 0.45);
-    const w0 = 2 * Math.PI * f / this.sr, c = Math.cos(w0), al = Math.sin(w0) / (2 * 0.7071), a0 = 1 + al;
-    this.b0 = ((1 - c) * 0.5) / a0; this.b1 = (1 - c) / a0; this.b2 = this.b0;
-    this.a1 = (-2 * c) / a0; this.a2 = (1 - al) / a0; this.lastCut = fc;
-  }
-  render(L, R, n) {
-    const t = this.t, TP = 2 * Math.PI, inv = 1 / this.sr, fl = this.waveFloor;
-    const W = this.waves;
-
-    // Wave envelopes move over seconds: compute once per block (128–1024 samples),
-    // then ramp linearly across the block so there are no steps.
-    const e0 = this.env, e1 = this.envNext;
-    for (let k = 0; k < 4; k++) {
-      const w = W[k];
-      w.ph += w.inc * (1 + 0.15 * Math.sin(w.dph)) * n * inv; w.ph -= Math.floor(w.ph);
-      w.dph += TP * w.drift * n * inv; if (w.dph >= TP) w.dph -= TP;
-      e1[k] = 0.5 - 0.5 * Math.cos(TP * w.ph);
+  render(L, R, SL, SR, n) {
+    const TP = 2 * Math.PI, inv = 1 / this.sr, dtB = n * inv, t = this.t;
+    // ---- control rate (once per block) ----
+    const k = (tau) => 1 - Math.exp(-dtB / tau);
+    this.beat += (t.beat - this.beat) * k(0.5);
+    this.air += (t.air - this.air) * k(0.5);
+    this.cluster += (t.cluster - this.cluster) * k(0.8);
+    const clGain = 2 * this.cluster * this.cluster;       // 0 … 2× (50 % = the v4 level)
+    this.bpm += (t.bpm - this.bpm) * k(3);
+    const m0 = this.master; this.master += (t.master - this.master) * k(1.2); const m1 = this.master;
+    this.breathPh = (this.breathPh + 0.045 * dtB) % 1;
+    this.breath = 0.45 + 0.55 * (0.5 + 0.5 * Math.sin(TP * this.breathPh));
+    this.heartHz = (this.bpm / 60) * this.stepLfn(this.hWander, dtB);
+    const hInc = this.heartHz * inv;
+    // cluster voices
+    for (const v of this.voices) {
+      v.wave.ph = (v.wave.ph + v.wave.inc * dtB) % 1;
+      v.env = 0.1 + 0.9 * (0.5 - 0.5 * Math.cos(TP * v.wave.ph));
+      for (const o of v.oscs) {
+        o.inc = v.f * (1 + this.stepLfn(o.det, dtB)) * inv;
+        const a = this.stepLfn(o.amp, dtB) * v.env * 0.09 * 0.14 * clGain;
+        const pn = (this.stepLfn(o.pan, dtB) + 1) * 0.25 * Math.PI;       // equal-power
+        o.gl = Math.cos(pn) * a; o.gr = Math.sin(pn) * a; o.sw = this.stepLfn(o.saw, dtB);
+      }
     }
-    const noiseEnv = 0.5 * (e1[2] + e1[3]);
-    const eff = this.cutoff * (1 + this.filterMod * noiseEnv);
-    if (Math.abs(eff - this.lastCut) > 0.5) this.updateFilter(eff);
-    const b0 = this.b0, b1 = this.b1, b2 = this.b2, a1 = this.a1, a2 = this.a2;
+    // air swells
+    this.nextSwell -= dtB;
+    if (this.nextSwell <= 0 && this.swells.length < 5) {
+      this.spawnSwell();
+      const gap = 11 - 8 * this.air;                        // 11 s … 3 s between swells
+      this.nextSwell = gap * (0.6 + 0.8 * this.rand());
+    }
+    let airSum = 0;
+    for (let i = this.swells.length - 1; i >= 0; i--) {
+      const w = this.swells[i]; w.t += dtB;
+      if (w.t >= w.att + w.rel) { this.swells.splice(i, 1); continue; }
+      const x = w.t < w.att ? w.t / w.att : 1 - (w.t - w.att) / w.rel;
+      w.env = 0.5 - 0.5 * Math.cos(Math.PI * x);             // Env \sine
+      const prox = w.env, reg = w.reg;
+      let lp, hp;
+      if (w.ch === 0) { lp = (900 + prox * 2600) * reg; hp = (140 + prox * 60) * reg; }
+      else if (w.ch === 1) { lp = 3500 * reg; hp = 500 * reg; }
+      else { lp = (300 + prox * 900) * reg; hp = 50 * reg; }
+      const dist = 0.9 - prox * 0.35, airLP = 16000 - dist * 14200;
+      lp = Math.min(Math.max(lp, 120), airLP, 9000);
+      w.a1 = 1 - Math.exp(-TP * lp * inv); w.ah = 1 - Math.exp(-TP * Math.min(hp, 900) * inv);
+      const g = w.env * 0.32 * w.amp;
+      const pan = Math.max(-1, Math.min(1, w.pan + this.stepLfn(w.drift, dtB)));
+      const pn = (pan + 1) * 0.25 * Math.PI;
+      w.gl = Math.cos(pn) * g * (1 - dist * 0.6); w.gr = Math.sin(pn) * g * (1 - dist * 0.6);
+      w.sl = Math.cos(pn) * g * dist * 0.6;      w.sr = Math.sin(pn) * g * dist * 0.6;
+      airSum += w.env;
+    }
+    this.airEnv = Math.min(1, airSum);
 
+    // ---- audio rate ----
+    const beat = this.beat, br = this.breath, fD = 55;
     for (let i = 0; i < n; i++) {
-      const x = i / n;
-      const gA = this.alphaLevel * (fl + (1 - fl) * (e0[0] + (e1[0] - e0[0]) * x));
-      const gG = this.gammaLevel * (fl + (1 - fl) * (e0[1] + (e1[1] - e0[1]) * x));
-      const gB = this.brownLevel * (fl + (1 - fl) * (e0[2] + (e1[2] - e0[2]) * x));
-      const gP = this.pinkLevel  * (fl + (1 - fl) * (e0[3] + (e1[3] - e0[3]) * x));
-
-      this.alpha += (t.alpha - this.alpha) * this.pc;
-      this.gamma += (t.gamma - this.gamma) * this.pc;
-      this.cutoff += (t.cutoff - this.cutoff) * this.pc;
-      this.cadence += (t.cadence - this.cadence) * this.cc;
-      this.master += (t.master - this.master) * this.mc;
-
-      // 01 alpha pair
-      const aL = Math.sin(this.aL), aR = Math.sin(this.aR);
-      this.aL += TP * this.alphaC * inv; if (this.aL >= TP) this.aL -= TP;
-      this.aR += TP * (this.alphaC + this.alpha) * inv; if (this.aR >= TP) this.aR -= TP;
-      // 02 gamma pair
-      const gL = Math.sin(this.gL), gR = Math.sin(this.gR);
-      this.gL += TP * this.gammaC * inv; if (this.gL >= TP) this.gL -= TP;
-      this.gR += TP * (this.gammaC + this.gamma) * inv; if (this.gR >= TP) this.gR -= TP;
-      // 02 brown + pink, each on its own wave, then LPF
-      this.brL = (this.brL + 0.02 * this.white()) / 1.02;
-      this.brR = (this.brR + 0.02 * this.white()) / 1.02;
-      const pL = this.pink(this.pkL, this.white()), pR = this.pink(this.pkR, this.white());
-      const xL = this.brL * 3.5 * gB + pL * gP, xR = this.brR * 3.5 * gB + pR * gP;
-      const nL = b0 * xL + this.z1L; this.z1L = b1 * xL - a1 * nL + this.z2L; this.z2L = b2 * xL - a2 * nL;
-      const nR = b0 * xR + this.z1R; this.z1R = b1 * xR - a1 * nR + this.z2R; this.z2R = b2 * xR - a2 * nR;
-      // 03 sub: a slow wave at the cadence rate (crest at phase 0)
-      const env = 0.5 + 0.5 * Math.cos(TP * this.cadencePhase);
-      const sub = (Math.sin(this.sub) + 0.35 * Math.sin(this.subO)) * (this.subFloor + (1 - this.subFloor) * env);
-      this.sub += TP * this.subHz * inv; if (this.sub >= TP) this.sub -= TP;
-      this.subO += TP * this.subOctHz * inv; if (this.subO >= TP) this.subO -= TP;
-      this.cadencePhase += this.cadence * inv; if (this.cadencePhase >= 1) this.cadencePhase -= 1;
-
-      const m = this.master;
-      L[i] = Math.tanh((gA * aL + gG * gL + nL + this.subLevel * sub) * m);
-      R[i] = Math.tanh((gA * aR + gG * gR + nR + this.subLevel * sub) * m);
+      const m = m0 + (m1 - m0) * (i / n);
+      // DRONE
+      const dl = Math.sin(this.dL) + 0.12 * Math.sin(this.dL2);
+      const dr = Math.sin(this.dR) + 0.12 * Math.sin(this.dR2);
+      this.dL += TP * fD * inv; this.dL2 += TP * fD * 2 * inv;
+      this.dR += TP * (fD + beat) * inv; this.dR2 += TP * (fD + beat) * 2 * inv;
+      if (this.dL > TP) this.dL -= TP; if (this.dL2 > TP) this.dL2 -= TP;
+      if (this.dR > TP) this.dR -= TP; if (this.dR2 > TP) this.dR2 -= TP;
+      const droneL = dl * 0.18 * br, droneR = dr * 0.18 * br;
+      // HEARTBEAT
+      const shape = Math.pow(0.5 + 0.5 * Math.sin(TP * this.hPh), 4);
+      this.hPh += hInc; if (this.hPh >= 1) this.hPh -= 1;
+      let lub = Math.sin(this.lub) * 0.35; this.lub += TP * 55 * inv; if (this.lub > TP) this.lub -= TP;
+      lub = Math.tanh(lub * 2.5) * 0.45 * shape;
+      // CLUSTER
+      let cl = 0, cr = 0;
+      for (const v of this.voices) for (const o of v.oscs) {
+        o.ph += o.inc; if (o.ph >= 1) o.ph -= 1;
+        const sgl = Math.sin(TP * o.ph) + o.sw * (2 * o.ph - 1);
+        cl += sgl * o.gl; cr += sgl * o.gr;
+      }
+      this.clLpL += (cl - this.clLpL) * this.clA; this.clLpR += (cr - this.clLpR) * this.clA;
+      // AIR
+      let al = 0, ar = 0, sl = 0, sr = 0;
+      for (const w of this.swells) {
+        const wn = this.white();
+        let x;
+        if (w.ch === 1) x = this.white() * 0.4 + wn * 0.6 * 0.5;
+        else {
+          w.br = (w.br + 0.02 * wn) / 1.02;
+          const pk = w.pk;
+          pk[0] = 0.99886 * pk[0] + wn * 0.0555179; pk[1] = 0.99332 * pk[1] + wn * 0.0750759;
+          pk[2] = 0.969 * pk[2] + wn * 0.153852; pk[3] = 0.8665 * pk[3] + wn * 0.3104856;
+          pk[4] = 0.55 * pk[4] + wn * 0.5329522; pk[5] = -0.7616 * pk[5] - wn * 0.016898;
+          const pink = (pk[0] + pk[1] + pk[2] + pk[3] + pk[4] + pk[5] + pk[6] + wn * 0.5362) * 0.11;
+          pk[6] = wn * 0.115926;
+          x = w.ch === 0 ? w.br * 3.5 * 0.35 + pink * 0.45 + wn * 0.2 * 0.3
+                         : w.br * 3.5 * 0.6 + pink * 0.35 + wn * 0.05 * 0.3;
+        }
+        w.lp1[0] += (x - w.lp1[0]) * w.a1; w.lp2[0] += (w.lp1[0] - w.lp2[0]) * w.a1;
+        w.hp[0] += (w.lp2[0] - w.hp[0]) * w.ah;
+        const y = (w.lp2[0] - w.hp[0]) * 2.2;
+        al += y * w.gl; ar += y * w.gr; sl += y * w.sl; sr += y * w.sr;
+      }
+      L[i] = Math.tanh((droneL + lub + this.clLpL + al) * m);
+      R[i] = Math.tanh((droneR + lub + this.clLpR + ar) * m);
+      // reverb send (dry-ish layers send less)
+      SL[i] = (droneL * 0.05 + lub * 0.08 + this.clLpL * 0.5 + sl) * m;
+      SR[i] = (droneR * 0.05 + lub * 0.08 + this.clLpR * 0.5 + sr) * m;
     }
-    this.env = e1; this.envNext = e0;
+    this.env[0] = (br - 0.45) / 0.55; this.env[1] = this.airEnv;
+    this.env[2] = Math.pow(0.5 + 0.5 * Math.sin(TP * this.hPh), 4);
+    let ce = 0; for (const v of this.voices) ce += v.env; this.env[3] = (ce / this.voices.length) * Math.min(1, clGain);
   }
 }
 
@@ -236,7 +276,7 @@ class InterstateKernel {
    ========================================================================= */
 const Engine = {
   ctx: null, node: null, kernel: null, send: null,
-  tel: [0.5, 0.11, 0, 0, 0, 0],  // [cadencePhase, cadenceHz, audioTimeOfBlock, alphaEnv, gammaEnv, noiseEnv]
+  tel: [0.75, 0.75, 0, 0, 0, 0],  // [heartPhase, heartHz, audioTimeOfBlock, droneBreath, airEnv, heart]
   running: false, stopTimer: null,
 
   async init() {
@@ -251,9 +291,10 @@ const Engine = {
             this.port.onmessage = e => this.k.setTargets(e.data); }
           process(inputs, outputs) {
             const out = outputs[0], L = out[0], R = out[1] || out[0];
-            const k = this.k, ph = k.cadencePhase, hz = k.cadence, t0 = currentTime;
-            k.render(L, R, L.length);
-            const tel = [ph, hz, t0, k.env[0], k.env[1], 0.5 * (k.env[2] + k.env[3])];
+            const snd = outputs[1], SL = snd[0], SR = snd[1] || snd[0];
+            const k = this.k, ph = k.hPh, t0 = currentTime;
+            k.render(L, R, SL, SR, L.length);
+            const tel = [ph, k.heartHz, t0, k.env[0], k.env[1], k.env[2], k.env[3]];
             if ((this.n++ & 3) === 0) this.port.postMessage(tel);
             return true;
           }
@@ -261,21 +302,40 @@ const Engine = {
         registerProcessor('interstate', InterstateProcessor);`;
       const url = URL.createObjectURL(new Blob([src], { type: 'application/javascript' }));
       await this.ctx.audioWorklet.addModule(url);
-      this.node = new AudioWorkletNode(this.ctx, 'interstate', { numberOfInputs: 0, outputChannelCount: [2] });
+      this.node = new AudioWorkletNode(this.ctx, 'interstate', { numberOfInputs: 0, numberOfOutputs: 2, outputChannelCount: [2, 2] });
+      this.hasSend = true;
       this.node.port.onmessage = e => { this.tel = e.data; };
       this.send = o => this.node.port.postMessage(o);
     } catch (err) {
       // Fallback: same kernel on the main thread.
       const k = this.kernel = new InterstateKernel(this.ctx.sampleRate);
       this.node = this.ctx.createScriptProcessor(1024, 1, 2);
+      const sl = new Float32Array(4096), sr = new Float32Array(4096);
       this.node.onaudioprocess = e => {
-        const ph = k.cadencePhase, hz = k.cadence, t0 = e.playbackTime;
-        k.render(e.outputBuffer.getChannelData(0), e.outputBuffer.getChannelData(1), e.outputBuffer.length);
-        this.tel = [ph, hz, t0, k.env[0], k.env[1], 0.5 * (k.env[2] + k.env[3])];
+        const ph = k.hPh, t0 = e.playbackTime, n = e.outputBuffer.length;
+        k.render(e.outputBuffer.getChannelData(0), e.outputBuffer.getChannelData(1), sl, sr, n);
+        this.tel = [ph, k.heartHz, t0, k.env[0], k.env[1], k.env[2], k.env[3]];
       };
       this.send = o => k.setTargets(o);
     }
-    this.node.connect(this.ctx.destination);
+    this.node.connect(this.ctx.destination, 0);
+    if (this.hasSend) {                               // the shared hall: a generated, dark impulse
+      const conv = this.ctx.createConvolver(); conv.buffer = this.hallIR(4.5);
+      const wet = this.ctx.createGain(); wet.gain.value = 0.7;
+      this.node.connect(conv, 1); conv.connect(wet).connect(this.ctx.destination);
+    }
+  },
+  hallIR(sec) {
+    const c = this.ctx, n = Math.floor(c.sampleRate * sec), buf = c.createBuffer(2, n, c.sampleRate);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = buf.getChannelData(ch); let lp = 0;
+      for (let i = 0; i < n; i++) {
+        const tt = i / c.sampleRate, damp = 0.25 - 0.18 * Math.min(1, tt / sec);   // darker as it decays
+        lp += ((Math.random() * 2 - 1) - lp) * damp;
+        d[i] = tt < 0.02 ? 0 : lp * Math.exp(-6.9 * tt / 3.6) * 0.5;
+      }
+    }
+    return buf;
   },
 
   heardTime() {
@@ -288,7 +348,7 @@ const Engine = {
     const x = p + hz * (this.heardTime() - t0);
     return x - Math.floor(x);
   },
-  waves() { return [this.tel[3], this.tel[4], this.tel[5]]; },
+  waves() { return [this.tel[3], this.tel[4], this.tel[5], this.tel[6]]; },
 
   async start(targets) {
     clearTimeout(this.stopTimer);
@@ -308,24 +368,23 @@ const Engine = {
    RINGS, STATE, MAPPING
    ========================================================================= */
 const RINGS = [
-  { key: 'outer',  color: '#2EE6D6', color2: '#4A7BFF', idle:  0.55, band: [0.76, 0.98], hit: [0.72, 1.12], arc: 1.02, turns: 1.35, arms: 2, value: 0.50 },
-  { key: 'middle', color: '#4A7BFF', color2: '#9D5CFF', idle: -0.8, band: [0.48, 0.70], hit: [0.44, 0.72], arc: 0.73, turns: 1.10, arms: 3, value: 0.60 },
-  { key: 'core',   color: '#9D5CFF', color2: '#2EE6D6', idle:  1.2, band: [0.04, 0.40], hit: [0.00, 0.44], arc: 0.43, turns: 3.00, arms: 1, value: 0.33 }
+  { key: 'outer',  name: 'DRONE',   color: '#2EE6D6', color2: '#4A7BFF', idle:  1, band: [0.82, 0.98], hit: [0.79, 1.14], value: 0.20 },
+  { key: 'air',    name: 'AIR',     color: '#4A7BFF', color2: '#9D5CFF', idle: -1, band: [0.60, 0.76], hit: [0.57, 0.79], value: 0.50 },
+  { key: 'inner',  name: 'CLUSTER', color: '#9D5CFF', color2: '#D07CFF', idle:  1, band: [0.38, 0.54], hit: [0.35, 0.57], value: 0.50 },
+  { key: 'core',   name: 'HEART',   color: '#D07CFF', color2: '#2EE6D6', idle: -1, band: [0.16, 0.32], hit: [0.00, 0.35], value: 0.50 }
 ];
-RINGS.forEach((r, i) => { r.drift = 0; r.rotation = 0; r.active = 0; r.grip = null; r.press = 0; r.teeth = i === 2 ? 36 : 60; });
+RINGS.forEach((r, i) => { r.dir = 1; r.moved = 0; r.rotation = 0; r.active = 0; r.grip = null; r.press = 0; r.teeth = i === 2 ? 36 : 60; });
 
 const map = {
-  alpha:   v => 9 + 3 * v,
-  gamma:   v => 30 + 10 * v,
-  cutoff:  v => 200 * Math.pow(10, v),
-  cadence: v => (4 + 8 * v) / 60       // 4–12 waves per minute (0.067–0.2 Hz)
+  beat: v => 0.5 + 3.5 * v,            // ring 01: drone binaural beat 0.5–4 Hz (delta → theta)
+  air:  v => v,                        // ring 02: air swells, sparse/dark → dense/lighter
+  cluster: v => v,                     // ring 03: cluster presence 0–100 %
+  bpm:  v => 30 + 30 * v               // ring 04 (centre): heartbeat 30–60 BPM
 };
-const targets = () => ({
-  alpha: map.alpha(RINGS[0].value), gamma: map.gamma(RINGS[1].value),
-  cutoff: map.cutoff(RINGS[1].value), cadence: map.cadence(RINGS[2].value)
-});
+const targets = () => ({ beat: map.beat(RINGS[0].value), air: map.air(RINGS[1].value),
+                         cluster: map.cluster(RINGS[2].value), bpm: map.bpm(RINGS[3].value) });
 
-let playing = false, pulse = 0, swell = 0, waveA = 0, lastPhase = 0;
+let playing = false, pulse = 0, swell = 0, waveA = 0, clusterEnv = 0, lastPhase = 0;
 const particles = [];
 
 /* Haptics: Android browsers support vibrate(); iPhone Safari does not. */
@@ -343,7 +402,7 @@ function resize() {
   dpr = Math.min(window.devicePixelRatio || 1, 3);
   cv.style.width = cv.style.height = side + 'px';
   cv.width = cv.height = Math.round(side * dpr);
-  R = side / 2 / 1.10;      // leave room for the outer arc + glow
+  R = side / 2 / 1.16;      // room for the outer label + glow
 }
 new ResizeObserver(resize).observe(stage); resize();
 
@@ -372,10 +431,37 @@ function ringStroke(r, ang, a) {
   return cg;
 }
 
-let lastDraw = 0;
+let lastDraw = 0, lastInteract = 0, restDim = 1;
+
+/* Knob scale: each ring's name and value written along its own circumference,
+   just outside the orbit, centred on the streak's head (it travels with the knob).
+   Faint at rest, bright while turning; hidden in eyes-closed mode. */
+const valueText = [
+  t => `DRONE ${t.beat.toFixed(1)} Hz`,
+  t => `AIR ${Math.round(t.air * 100)}%`,
+  t => `CLUSTER ${Math.round(t.cluster * 100)}%`,
+  t => `HEART ${Math.round(t.bpm)} BPM`
+];
+function arcLabel(r, idx, orbit, head) {
+  // Horizontal, centred above the ring's circle (12 o'clock), like the legend on a knob.
+  const txt = valueText[idx](targets());
+  const a = Math.max(0.4, r.press, r.moved) * restDim;
+  if (a < 0.02) return;
+  g.save();
+  g.font = `500 ${idx === 3 ? 8.5 : 9.5}px "IBM Plex Mono", ui-monospace, Menlo, monospace`;
+  g.textAlign = 'center'; g.textBaseline = 'bottom';
+  g.fillStyle = hexA(r.color, 0.9 * a); g.shadowColor = r.color; g.shadowBlur = 6 * a;
+  g.fillText(txt, 0, -orbit - (idx === 3 ? 11 : 14));   // clears the streak head when it sits at 12 o'clock
+  g.restore();
+}
 const reduceMotion = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
 function draw(now) {
   const dt = Math.min(0.05, lastDraw ? now - lastDraw : 0.016); lastDraw = now;
+  // Eyes-closed mode: 20 s after the last touch while playing, everything but the
+  // breathing core fades back; any touch brings it forward again.
+  const resting = playing && (now - lastInteract > 20);
+  restDim += ((resting ? 0.25 : 1) - restDim) * Math.min(1, dt * 0.6);
+  document.body.classList.toggle('rest', resting);
   g.setTransform(dpr, 0, 0, dpr, side * dpr / 2, side * dpr / 2);
 
   // HALO TRAILS: fade the previous frame instead of clearing it, so every moving
@@ -392,26 +478,30 @@ function draw(now) {
   RINGS.forEach((r, idx) => {
     const act = r.active > 0;
     r.press += ((act ? 1 : 0) - r.press) * 0.25;
-    // Each ring is one streak of light spinning on its orbit (a chakra wheel):
-    // idle spin + the knob's own rotation, so turning a ring visibly drives it.
-    r.drift += r.idle * dt * (playing ? 1.4 : 1);
-    const head = r.rotation * 1.5 + r.drift;
+    // Each ring is one streak of light. It moves only when you turn the ring:
+    // the head sits at the ring's value (12 o'clock = minimum, clockwise = more),
+    // and the tail trails behind the direction of the last turn.
+    r.moved = Math.max(0, r.moved - dt * 1.5);             // 1 → 0 after a turn
+    const head = -Math.PI / 2 + r.value * Math.PI * 2;
     const orbit = ((r.band[0] + r.band[1]) / 2) * R;
-    let energy = act ? 1 : (playing ? 0.75 : 0.55);
-    if (idx === 0) energy += 0.25 * waveA;
-    if (idx === 1) energy += 0.25 * swell;
-    if (idx === 2) energy += 0.35 * pulse;
-    const dir = Math.sign(r.idle);
-    const tail = 1.6 + 0.8 * r.press;                        // radians of tail behind the head
+    // Brightness breathes with the ring's own sound; the whole wheel dims at rest.
+    let energy = act ? 1 : (playing ? 0.6 : 0.45);
+    if (idx === 0) energy += 0.35 * waveA;
+    if (idx === 1) energy += 0.35 * swell;
+    if (idx === 2) energy += 0.3 * clusterEnv;
+    if (idx === 3) energy += 0.5 * pulse;
+    energy = Math.max(energy * restDim, act ? 1 : 0);
+    const dir = r.dir;
+    const tail = 0.9 + 1.3 * Math.max(r.press, r.moved);     // tail stretches while turning
 
     // Faint orbit: where to put your finger.
     g.globalCompositeOperation = 'source-over';
-    g.shadowBlur = 0; g.lineWidth = 0.6; g.strokeStyle = hexA(r.color, 0.06 + 0.06 * r.press);
+    g.shadowBlur = 0; g.lineWidth = 0.6; g.strokeStyle = hexA(r.color, (0.05 + 0.08 * r.press) * restDim);
     g.beginPath(); g.arc(0, 0, orbit, 0, Math.PI * 2); g.stroke();
 
     // Core: a breathing violet orb under its streak.
-    if (idx === 2) {
-      const rr = R * (0.34 + 0.05 * pulse);
+    if (idx === 3) {
+      const rr = R * (0.30 + 0.05 * pulse);
       const gr = g.createRadialGradient(0, 0, 0, 0, 0, rr);
       gr.addColorStop(0.0, hexA('#C9A8FF', 0.10 + 0.14 * pulse));
       gr.addColorStop(0.35, hexA('#9D5CFF', 0.06 + 0.08 * pulse));
@@ -449,11 +539,8 @@ function draw(now) {
     g.shadowBlur = 0; g.fillStyle = hg;
     g.beginPath(); g.arc(hx, hy, 14 + 6 * r.press, 0, Math.PI * 2); g.fill();
 
-    // Value marker: one small still node on the orbit (12 o'clock = minimum).
     g.globalCompositeOperation = 'source-over';
-    const v = -Math.PI / 2 + r.value * Math.PI * 2;
-    g.shadowColor = r.color; g.shadowBlur = 6; g.fillStyle = hexA(r.color, 0.5 + 0.4 * r.press);
-    g.beginPath(); g.arc(orbit * Math.cos(v), orbit * Math.sin(v), 1.6 + 0.8 * r.press, 0, Math.PI * 2); g.fill();
+    arcLabel(r, idx, orbit, head);
 
     // Grip halo under the finger.
     if (r.grip !== null && r.press > 0.05) {
@@ -516,10 +603,10 @@ function frame(ms) {
   const now = ms / 1000;
   if (playing && Engine.ctx) {
     const ph = Engine.cadencePhase();
-    pulse = 0.5 + 0.5 * Math.cos(2 * Math.PI * ph);
-    if (lastPhase > 0.75 && ph < 0.25) buzz(30);          // heavy thud at each sub-wave crest
+    pulse = Math.pow(0.5 + 0.5 * Math.sin(2 * Math.PI * ph), 4);   // same shape as the heartbeat
+    if (lastPhase < 0.25 && ph >= 0.25 && ph - lastPhase < 0.5) buzz(30);   // thud on each beat's peak
     lastPhase = ph;
-    const w = Engine.waves(); waveA = w[0]; swell = 0.5 * (w[1] + w[2]);
+    const w = Engine.waves(); waveA = w[0]; swell = w[1]; clusterEnv = w[3];
   } else {
     pulse = Math.max(0, pulse - 0.02); swell = Math.max(0, swell - 0.02); waveA = Math.max(0, waveA - 0.02);
   }
@@ -534,21 +621,8 @@ requestAnimationFrame(frame);
    READOUTS
    ========================================================================= */
 const $ = id => document.getElementById(id);
-let lastText = '';
-function updateReadouts() {
-  const t = targets();
-  const cut = t.cutoff < 1000 ? `${t.cutoff.toFixed(0)} Hz` : `${(t.cutoff / 1000).toFixed(2)} kHz`;
-  const perMin = t.cadence * 60;
-  const text = [t.alpha.toFixed(1), t.gamma.toFixed(1), cut, perMin.toFixed(1), playing].join('|');
-  if (text === lastText) return; lastText = text;
-  $('v-outer').textContent = `${t.alpha.toFixed(1)} Hz`;
-  $('v-middle').textContent = `${t.gamma.toFixed(1)} Hz`;
-  $('c-middle').textContent = `DRIVE · γ   BROWN + PINK WAVES   LPF ${cut}`;
-  $('v-core').textContent = `${perMin.toFixed(1)} /min`;
-  $('c-core').textContent = `SUB WAVE · ONE EVERY ${(60 / perMin).toFixed(1)} s`;
-  $('state').textContent = playing ? 'ACTIVE' : 'TAP CORE TO BEGIN';
-  $('dot').classList.toggle('on', playing);
-}
+function showHud() {}
+function updateReadouts() {}
 
 /* =========================================================================
    GESTURES: one tracked pointer per ring → true multi-touch
@@ -567,6 +641,7 @@ cv.addEventListener('pointerdown', e => {
   cv.setPointerCapture(e.pointerId);
   pointers.set(e.pointerId, { idx, last: angle, x: e.clientX, y: e.clientY, moved: 0, t: performance.now() });
   RINGS[idx].active++; RINGS[idx].grip = angle;
+  lastInteract = performance.now() / 1000;
   buzz(4);
 });
 
@@ -588,7 +663,7 @@ function end(e) {
   pointers.delete(e.pointerId);
   RINGS[p.idx].active = Math.max(0, RINGS[p.idx].active - 1);
   if (!RINGS[p.idx].active) RINGS[p.idx].grip = null;
-  if (p.idx === 2 && p.moved < 8) toggle();
+  if (p.idx === 3 && p.moved < 8) toggle();
 }
 cv.addEventListener('pointerup', end);
 cv.addEventListener('pointercancel', end);
@@ -599,6 +674,9 @@ function rotate(idx, delta, angle, dt) {
   const eff = (r.value - old) * 2 * Math.PI;
   if (!eff) return;                                                   // pinned at an end-stop
   r.rotation += eff;
+  r.dir = eff > 0 ? 1 : -1; r.moved = 1;
+  lastInteract = performance.now() / 1000;
+  showHud(idx);
   const w = eff / dt;
   emit(r, angle, w);
   if (Engine.send) Engine.send(targets());
@@ -631,19 +709,21 @@ let wakeLock = null;
 async function toggle() {
   if (playing) {
     Engine.stop(); playing = false;
+    $('hint').textContent = 'Tap the centre to begin.';
     try { wakeLock && wakeLock.release(); } catch (e) {} wakeLock = null;
   } else {
     playing = true; lastPhase = 0;
     try { await Engine.start(targets()); }
-    catch (err) { playing = false; $('state').textContent = 'AUDIO COULD NOT START. TAP AGAIN'; $('state').classList.add('err'); return; }
-    $('state').classList.remove('err');
+    catch (err) { playing = false; $('hint').textContent = 'Audio could not start. Tap the centre again.'; return; }
+    $('hint').textContent = 'Press a ring and turn it.';
+    lastInteract = performance.now() / 1000;
     buzz(20);
     try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
   }
 }
 cv.addEventListener('keydown', e => {
   if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); toggle(); }
-  const steps = { ArrowUp: [0, 1], ArrowDown: [0, -1], ArrowRight: [1, 1], ArrowLeft: [1, -1], PageUp: [2, 1], PageDown: [2, -1] };
+  const steps = { ArrowUp: [0, 1], ArrowDown: [0, -1], ArrowRight: [1, 1], ArrowLeft: [1, -1], PageUp: [3, 1], PageDown: [3, -1], Home: [2, 1], End: [2, -1] };
   if (steps[e.key]) { e.preventDefault(); const [i, s] = steps[e.key]; rotate(i, s * 0.05 * 2 * Math.PI, -Math.PI / 2, 0.05); }
 });
 </script>
