@@ -373,7 +373,7 @@ const RINGS = [
   { key: 'inner',  name: 'CLUSTER', color: '#9D5CFF', color2: '#D07CFF', idle:  1, band: [0.38, 0.54], hit: [0.35, 0.57], value: 0.50 },
   { key: 'core',   name: 'HEART',   color: '#D07CFF', color2: '#2EE6D6', idle: -1, band: [0.16, 0.32], hit: [0.00, 0.35], value: 0.50 }
 ];
-RINGS.forEach((r, i) => { r.dir = 1; r.moved = 0; r.rotation = 0; r.active = 0; r.grip = null; r.press = 0; r.teeth = i === 2 ? 36 : 60; });
+RINGS.forEach((r, i) => { r.dir = i % 2 ? -1 : 1; r.spin = 0; r.awake = false; r.phase = -Math.PI / 2 + r.value * Math.PI * 2; r.moved = 0; r.rotation = 0; r.active = 0; r.grip = null; r.press = 0; r.teeth = i === 2 ? 36 : 60; });
 
 const map = {
   beat: v => 0.5 + 3.5 * v,            // ring 01: drone binaural beat 0.5–4 Hz (delta → theta)
@@ -384,6 +384,7 @@ const map = {
 const targets = () => ({ beat: map.beat(RINGS[0].value), air: map.air(RINGS[1].value),
                          cluster: map.cluster(RINGS[2].value), bpm: map.bpm(RINGS[3].value) });
 
+let stoppedAt = 0;
 let playing = false, pulse = 0, swell = 0, waveA = 0, clusterEnv = 0, lastPhase = 0;
 const particles = [];
 
@@ -445,7 +446,10 @@ const valueText = [
 function arcLabel(r, idx, orbit, head) {
   // Horizontal, centred above the ring's circle (12 o'clock), like the legend on a knob.
   const txt = valueText[idx](targets());
-  const a = Math.max(0.4, r.press, r.moved) * restDim;
+  // Hidden at rest: appears only while a finger is on this ring (and fades after).
+  // On first load all four show for a few seconds so people learn what the rings are.
+  const intro = Math.max(0, Math.min(1, 5 - performance.now() / 1000)) * 0.6;
+  const a = Math.max(r.press, r.moved, intro) * restDim;
   if (a < 0.02) return;
   g.save();
   g.font = `500 ${idx === 3 ? 8.5 : 9.5}px "IBM Plex Mono", ui-monospace, Menlo, monospace`;
@@ -478,11 +482,19 @@ function draw(now) {
   RINGS.forEach((r, idx) => {
     const act = r.active > 0;
     r.press += ((act ? 1 : 0) - r.press) * 0.25;
-    // Each ring is one streak of light. It moves only when you turn the ring:
-    // the head sits at the ring's value (12 o'clock = minimum, clockwise = more),
-    // and the tail trails behind the direction of the last turn.
+    // Each ring is one streak of light — a chakra wheel. It is still until you
+    // wake it (turn that ring, or start the session). From then on it keeps
+    // spinning; the ring's setting sets its speed, the direction of your last
+    // turn sets its direction, and turning pushes it live under your finger.
+    // Stopping the session lets the wheels glide to rest.
     r.moved = Math.max(0, r.moved - dt * 1.5);             // 1 → 0 after a turn
-    const head = -Math.PI / 2 + r.value * Math.PI * 2;
+    const t = targets();
+    const speed = idx === 3 ? (2 * Math.PI * t.bpm / 60) / 4 // heart: one turn every 4 beats
+                            : 0.3 + 1.5 * r.value;          // 0.3 … 1.8 rad/s
+    const target = (playing || (r.awake && !stoppedAt)) ? speed * r.dir : 0;
+    r.spin += (target - r.spin) * Math.min(1, dt * (target ? 2.5 : 0.6));
+    r.phase += r.spin * dt;
+    const head = r.phase;
     const orbit = ((r.band[0] + r.band[1]) / 2) * R;
     // Brightness breathes with the ring's own sound; the whole wheel dims at rest.
     let energy = act ? 1 : (playing ? 0.6 : 0.45);
@@ -674,7 +686,8 @@ function rotate(idx, delta, angle, dt) {
   const eff = (r.value - old) * 2 * Math.PI;
   if (!eff) return;                                                   // pinned at an end-stop
   r.rotation += eff;
-  r.dir = eff > 0 ? 1 : -1; r.moved = 1;
+  r.dir = eff > 0 ? 1 : -1; r.moved = 1; r.awake = true; stoppedAt = 0;
+  r.phase += eff;                                      // the streak follows the finger
   lastInteract = performance.now() / 1000;
   showHud(idx);
   const w = eff / dt;
@@ -708,11 +721,11 @@ function emit(r, angle, w) {
 let wakeLock = null;
 async function toggle() {
   if (playing) {
-    Engine.stop(); playing = false;
+    Engine.stop(); playing = false; stoppedAt = performance.now();
     $('hint').textContent = 'Tap the centre to begin.';
     try { wakeLock && wakeLock.release(); } catch (e) {} wakeLock = null;
   } else {
-    playing = true; lastPhase = 0;
+    playing = true; lastPhase = 0; stoppedAt = 0;
     try { await Engine.start(targets()); }
     catch (err) { playing = false; $('hint').textContent = 'Audio could not start. Tap the centre again.'; return; }
     $('hint').textContent = 'Press a ring and turn it.';
