@@ -72,7 +72,7 @@
   <h1 class="wordmark">INTERSTATE</h1>
 
   <div class="stage" id="stage">
-    <canvas id="dial" tabindex="0" aria-label="Three concentric dials. Tap the centre to start or stop. Drag around a ring to turn it."></canvas>
+    <canvas id="dial" tabindex="0" aria-label="Three concentric knobs. Tap the centre to start or stop. Press a ring and turn it. Arrow keys and Page Up or Down also turn them."></canvas>
   </div>
 
   <section class="readouts" aria-live="polite">
@@ -97,7 +97,7 @@
     </div>
   </section>
 
-  <p class="note">Browser preview of the Interstate iOS app. Circle a finger around a ring to turn it; two fingers turn two rings. Haptics need the native app. On iPhone, turn the ring/silent switch off if you hear nothing.</p>
+  <p class="note">Browser preview of the Interstate iOS app. Press a ring and turn it like a knob, clockwise or anticlockwise. Two fingers turn two rings. Haptics need the native app. On iPhone, turn the ring/silent switch off if you hear nothing.</p>
 </div>
 
 <script>
@@ -286,7 +286,7 @@ const RINGS = [
   { key: 'middle', color: '#FFB300', band: [0.48, 0.70], hit: [0.44, 0.72], arc: 0.73, turns: 1.10, arms: 3, value: 0.60 },
   { key: 'core',   color: '#FF1F3D', band: [0.04, 0.40], hit: [0.00, 0.44], arc: 0.43, turns: 3.00, arms: 1, value: 0.33 }
 ];
-RINGS.forEach(r => { r.rotation = 0; r.active = 0; });
+RINGS.forEach((r, i) => { r.rotation = 0; r.active = 0; r.grip = null; r.press = 0; r.teeth = i === 2 ? 36 : 60; });
 
 const map = {
   alpha:   v => 9 + 3 * v,
@@ -343,6 +343,9 @@ function draw(now) {
   RINGS.forEach((r, idx) => {
     const act = r.active > 0;
     let scale = 1, glow = act ? 8 : 2, alpha = act ? 0.95 : (playing ? 0.7 : 0.4);
+    // Pressed knob sinks in slightly (eased).
+    r.press += ((act ? 1 : 0) - r.press) * 0.25;
+    const sink = 1 - 0.015 * r.press;
     if (idx === 2) { scale = 1 + 0.07 * pulse; glow += 8 * pulse; }
     if (idx === 1) { scale = 1 + 0.025 * swell; glow += 6 * swell; alpha = Math.min(1, alpha + 0.2 * swell); }
 
@@ -358,12 +361,35 @@ function draw(now) {
     // spiral
     g.shadowColor = r.color; g.shadowBlur = glow;
     g.strokeStyle = hexA(r.color, alpha); g.lineWidth = 0.9;
-    spiral(r, scale); g.stroke();
+    spiral(r, scale * sink); g.stroke();
+
+    // Knurled gear rim: one tooth per haptic detent, turning 1:1 with the knob.
+    const rimIn = (r.band[1] + 0.008) * R * sink, rimOut = rimIn + (0.018 + 0.012 * r.press) * R;
+    g.shadowBlur = r.press * 6; g.lineWidth = 0.8;
+    g.strokeStyle = hexA(r.color, 0.22 + 0.55 * r.press + (playing ? 0.1 : 0));
+    g.beginPath();
+    for (let k = 0; k < r.teeth; k++) {
+      const th = r.rotation + k / r.teeth * Math.PI * 2, c = Math.cos(th), s = Math.sin(th);
+      g.moveTo(rimIn * c, rimIn * s); g.lineTo(rimOut * c, rimOut * s);
+    }
+    g.stroke();
+
+    // Grip glow under the finger while pressed.
+    if (r.grip !== null && r.press > 0.05) {
+      const gx = Math.cos(r.grip) * (rimIn + rimOut) / 2, gy = Math.sin(r.grip) * (rimIn + rimOut) / 2;
+      const gg = g.createRadialGradient(gx, gy, 0, gx, gy, 0.09 * R);
+      gg.addColorStop(0, hexA(r.color, 0.35 * r.press)); gg.addColorStop(1, hexA(r.color, 0));
+      g.shadowBlur = 0; g.fillStyle = gg; g.beginPath(); g.arc(gx, gy, 0.09 * R, 0, Math.PI * 2); g.fill();
+    }
     // value arc: faint track + lit arc from 12 o'clock
     g.shadowBlur = 0; g.lineWidth = 0.6; g.strokeStyle = hexA(r.color, 0.12);
     g.beginPath(); g.arc(0, 0, r.arc * R, 0, Math.PI * 2); g.stroke();
     g.shadowBlur = act ? 8 : 3; g.lineWidth = 1.8; g.strokeStyle = hexA(r.color, act ? 1 : 0.75);
-    g.beginPath(); g.arc(0, 0, r.arc * R, -Math.PI / 2, -Math.PI / 2 + r.value * Math.PI * 2); g.stroke();
+    const head = -Math.PI / 2 + r.value * Math.PI * 2;
+    g.beginPath(); g.arc(0, 0, r.arc * R, -Math.PI / 2, head); g.stroke();
+    // Knob pointer: bright node at the arc head.
+    g.shadowBlur = 8; g.fillStyle = r.color;
+    g.beginPath(); g.arc(r.arc * R * Math.cos(head), r.arc * R * Math.sin(head), 2.2 + 0.8 * r.press, 0, Math.PI * 2); g.fill();
   });
 
   // particles, additive
@@ -439,13 +465,15 @@ cv.addEventListener('pointerdown', e => {
   if (idx < 0) return;
   cv.setPointerCapture(e.pointerId);
   pointers.set(e.pointerId, { idx, last: angle, x: e.clientX, y: e.clientY, moved: 0, t: performance.now() });
-  RINGS[idx].active++;
+  RINGS[idx].active++; RINGS[idx].grip = angle;
+  buzz(4);
 });
 
 cv.addEventListener('pointermove', e => {
   const p = pointers.get(e.pointerId); if (!p) return;
   const { angle, dist } = polar(e);
   p.moved = Math.max(p.moved, Math.hypot(e.clientX - p.x, e.clientY - p.y));
+  RINGS[p.idx].grip = angle;
   if (dist < 0.06) { p.last = angle; return; }
   let d = angle - p.last;
   if (d > Math.PI) d -= 2 * Math.PI; else if (d <= -Math.PI) d += 2 * Math.PI;
@@ -458,6 +486,7 @@ function end(e) {
   const p = pointers.get(e.pointerId); if (!p) return;
   pointers.delete(e.pointerId);
   RINGS[p.idx].active = Math.max(0, RINGS[p.idx].active - 1);
+  if (!RINGS[p.idx].active) RINGS[p.idx].grip = null;
   if (p.idx === 2 && p.moved < 8) toggle();
 }
 cv.addEventListener('pointerup', end);
