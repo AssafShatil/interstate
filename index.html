@@ -1,0 +1,520 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Interstate Web Demo</title>
+<meta name="theme-color" content="#000000">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&display=swap">
+<style>
+  /* Single-look design: Interstate is pure black by identity, in any host theme. */
+  :root {
+    color-scheme: dark;
+    --black: #000000;
+    --teal: #00F5D4;
+    --amber: #FFB300;
+    --crimson: #FF1F3D;
+    --label: #7C838C;      /* cool grey, biased toward the teal */
+    --faint: #1A1D21;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  html, body { height: 100%; background: var(--black); }
+  body {
+    margin: 0;
+    color: var(--label);
+    font-family: var(--mono);
+    -webkit-tap-highlight-color: transparent;
+    -webkit-user-select: none; user-select: none;
+    overflow: hidden;
+  }
+  .app {
+    height: 100%;
+    box-sizing: border-box;
+    display: flex; flex-direction: column; align-items: center;
+    padding-inline: 16px;
+    padding-block: 16px 12px;
+    gap: 8px;
+  }
+  .wordmark {
+    margin: 0;
+    font-weight: 300; font-size: 13px;
+    letter-spacing: 0.6em; padding-left: 0.6em;   /* optically centre the tracked word */
+    color: var(--label);
+  }
+  .stage {
+    flex: 1 1 auto; min-height: 0; width: 100%;
+    display: flex; align-items: center; justify-content: center;
+  }
+  canvas { display: block; touch-action: none; max-width: 100%; }
+  canvas:focus-visible { outline: 1px solid var(--label); outline-offset: 4px; border-radius: 50%; }
+
+  .readouts {
+    width: 100%; max-width: 420px;
+    display: grid; gap: 12px;
+  }
+  .row { display: grid; grid-template-columns: 2px 1fr auto; column-gap: 10px; align-items: baseline; }
+  .row .bar { align-self: stretch; border-radius: 1px; }
+  .row .name { font-size: 11px; font-weight: 500; letter-spacing: 0.04em; }
+  .row .cap { font-size: 9px; letter-spacing: 0.06em; opacity: 0.75; margin-top: 3px; }
+  .row .val { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .outer .bar { background: var(--teal); box-shadow: 0 0 6px var(--teal); }   .outer .val { color: var(--teal); }
+  .middle .bar { background: var(--amber); box-shadow: 0 0 6px var(--amber); } .middle .val { color: var(--amber); }
+  .core .bar { background: var(--crimson); box-shadow: 0 0 6px var(--crimson); } .core .val { color: var(--crimson); }
+
+  .status {
+    display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+    font-size: 9px; letter-spacing: 0.08em; padding-top: 4px;
+  }
+  .dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--label); margin-right: 8px; vertical-align: middle; }
+  .dot.on { background: var(--crimson); box-shadow: 0 0 6px var(--crimson); }
+  .note { font-size: 9px; letter-spacing: 0.04em; opacity: 0.6; text-align: center; max-width: 420px; line-height: 1.5; margin: 0; }
+  .err { color: var(--crimson); }
+</style>
+</head><body>
+<div class="app">
+  <h1 class="wordmark">INTERSTATE</h1>
+
+  <div class="stage" id="stage">
+    <canvas id="dial" tabindex="0" aria-label="Three concentric dials. Tap the centre to start or stop. Drag around a ring to turn it."></canvas>
+  </div>
+
+  <section class="readouts" aria-live="polite">
+    <div class="row outer">
+      <span class="bar"></span>
+      <div><div class="name">01 / PARASYMPATHETIC SYNC</div><div class="cap">SYNC · α BINAURAL · CARRIER 220 Hz</div></div>
+      <span class="val" id="v-outer">10.5 Hz</span>
+    </div>
+    <div class="row middle">
+      <span class="bar"></span>
+      <div><div class="name">02 / LIBIDO CORE</div><div class="cap" id="c-middle">DRIVE · γ   LPF 794 Hz   SWELL —</div></div>
+      <span class="val" id="v-middle">36.0 Hz</span>
+    </div>
+    <div class="row core">
+      <span class="bar"></span>
+      <div><div class="name">03 / PELVIC CADENCE</div><div class="cap" id="c-core">CADENCE RATE · 119 BPM</div></div>
+      <span class="val" id="v-core">1.99 Hz</span>
+    </div>
+    <div class="status">
+      <span><span class="dot" id="dot"></span><span id="state">TAP CORE TO BEGIN</span></span>
+      <span>HEADPHONES ON</span>
+    </div>
+  </section>
+
+  <p class="note">Browser preview of the Interstate iOS app. Circle a finger around a ring to turn it; two fingers turn two rings. Haptics need the native app. On iPhone, turn the ring/silent switch off if you hear nothing.</p>
+</div>
+
+<script>
+/* =========================================================================
+   DSP KERNEL: a line-by-line port of Interstate/Audio/DSPKernel.swift.
+   Self-contained (no outer references) so its source can be shipped into an
+   AudioWorklet via Function.prototype.toString().
+   ========================================================================= */
+class InterstateKernel {
+  constructor(sr) {
+    this.sr = sr;
+    // tuning
+    this.alphaC = 220; this.gammaC = 330; this.subHz = 110; this.subOctHz = 55;
+    this.alphaLevel = 0.16; this.gammaLevel = 0.09; this.brownLevel = 0.22; this.pinkLevel = 0.15;
+    this.subLevel = 0.30; this.subFloor = 0.25;
+    this.swellPeriod = 10; this.swellDriftHz = 0.013; this.swellDriftAmt = 0.15;
+    this.swellFloor = 0.30; this.swellFilterMod = 0.35;
+    // targets + smoothed values
+    this.t = { alpha: 10.5, gamma: 36, cutoff: 794, cadence: 2, master: 0 };
+    this.alpha = 10.5; this.gamma = 36; this.cutoff = 794; this.cadence = 2; this.master = 0;
+    this.pc = 1 - Math.exp(-1 / (0.050 * sr));
+    this.mc = 1 - Math.exp(-1 / (0.350 * sr));
+    // phases
+    this.aL = 0; this.aR = 0; this.gL = 0; this.gR = 0; this.sub = 0; this.subO = 0;
+    this.cadencePhase = 0; this.swellPhase = 0; this.driftPhase = 0;
+    // noise
+    this.brL = 0; this.brR = 0;
+    this.pkL = new Float64Array(7); this.pkR = new Float64Array(7);
+    this.rng = 0x9E3779B9 >>> 0;
+    // biquad
+    this.b0 = 0; this.b1 = 0; this.b2 = 0; this.a1 = 0; this.a2 = 0;
+    this.z1L = 0; this.z2L = 0; this.z1R = 0; this.z2R = 0; this.lastCut = -1;
+    this.updateFilter(this.cutoff);
+  }
+  setTargets(o) { Object.assign(this.t, o); }
+  white() {
+    let x = this.rng;
+    x ^= x << 13; x >>>= 0;
+    x ^= x >>> 17;
+    x ^= x << 5; x >>>= 0;
+    this.rng = x;
+    return x * (2 / 4294967295) - 1;
+  }
+  pink(s, w) {   // Paul Kellet refined
+    s[0] = 0.99886 * s[0] + w * 0.0555179;
+    s[1] = 0.99332 * s[1] + w * 0.0750759;
+    s[2] = 0.96900 * s[2] + w * 0.1538520;
+    s[3] = 0.86650 * s[3] + w * 0.3104856;
+    s[4] = 0.55000 * s[4] + w * 0.5329522;
+    s[5] = -0.7616 * s[5] - w * 0.0168980;
+    const p = s[0] + s[1] + s[2] + s[3] + s[4] + s[5] + s[6] + w * 0.5362;
+    s[6] = w * 0.115926;
+    return p * 0.11;
+  }
+  updateFilter(fc) {   // RBJ low-pass, Q 0.707
+    const f = Math.min(Math.max(fc, 20), this.sr * 0.45);
+    const w0 = 2 * Math.PI * f / this.sr, c = Math.cos(w0), al = Math.sin(w0) / (2 * 0.7071), a0 = 1 + al;
+    this.b0 = ((1 - c) * 0.5) / a0; this.b1 = (1 - c) / a0; this.b2 = this.b0;
+    this.a1 = (-2 * c) / a0; this.a2 = (1 - al) / a0; this.lastCut = fc;
+  }
+  render(L, R, n) {
+    const t = this.t, TP = 2 * Math.PI, inv = 1 / this.sr;
+    const blockSwell = 0.5 - 0.5 * Math.cos(TP * this.swellPhase);
+    const eff = this.cutoff * (1 + this.swellFilterMod * blockSwell);
+    if (Math.abs(eff - this.lastCut) > 0.5) this.updateFilter(eff);
+    const b0 = this.b0, b1 = this.b1, b2 = this.b2, a1 = this.a1, a2 = this.a2;
+    for (let i = 0; i < n; i++) {
+      this.alpha += (t.alpha - this.alpha) * this.pc;
+      this.gamma += (t.gamma - this.gamma) * this.pc;
+      this.cutoff += (t.cutoff - this.cutoff) * this.pc;
+      this.cadence += (t.cadence - this.cadence) * this.pc;
+      this.master += (t.master - this.master) * this.mc;
+
+      // 01 alpha pair
+      const aL = Math.sin(this.aL), aR = Math.sin(this.aR);
+      this.aL += TP * this.alphaC * inv; if (this.aL >= TP) this.aL -= TP;
+      this.aR += TP * (this.alphaC + this.alpha) * inv; if (this.aR >= TP) this.aR -= TP;
+      // 02 gamma pair
+      const gL = Math.sin(this.gL), gR = Math.sin(this.gR);
+      this.gL += TP * this.gammaC * inv; if (this.gL >= TP) this.gL -= TP;
+      this.gR += TP * (this.gammaC + this.gamma) * inv; if (this.gR >= TP) this.gR -= TP;
+      // 02 noise swells
+      const sw = 0.5 - 0.5 * Math.cos(TP * this.swellPhase);
+      this.swellPhase += (1 / this.swellPeriod) * (1 + this.swellDriftAmt * Math.sin(this.driftPhase)) * inv;
+      if (this.swellPhase >= 1) this.swellPhase -= 1;
+      this.driftPhase += TP * this.swellDriftHz * inv; if (this.driftPhase >= TP) this.driftPhase -= TP;
+      const bg = this.brownLevel * (this.swellFloor + (1 - this.swellFloor) * sw);
+      const pg = this.pinkLevel * (this.swellFloor + (1 - this.swellFloor) * (1 - sw));
+      this.brL = (this.brL + 0.02 * this.white()) / 1.02;
+      this.brR = (this.brR + 0.02 * this.white()) / 1.02;
+      const pL = this.pink(this.pkL, this.white()), pR = this.pink(this.pkR, this.white());
+      const xL = this.brL * 3.5 * bg + pL * pg, xR = this.brR * 3.5 * bg + pR * pg;
+      const nL = b0 * xL + this.z1L; this.z1L = b1 * xL - a1 * nL + this.z2L; this.z2L = b2 * xL - a2 * nL;
+      const nR = b0 * xR + this.z1R; this.z1R = b1 * xR - a1 * nR + this.z2R; this.z2R = b2 * xR - a2 * nR;
+      // 03 sub + cadence envelope (peak at phase 0)
+      const c = 0.5 + 0.5 * Math.cos(TP * this.cadencePhase), env = c * c;
+      const sub = (Math.sin(this.sub) + 0.35 * Math.sin(this.subO)) * (this.subFloor + (1 - this.subFloor) * env);
+      this.sub += TP * this.subHz * inv; if (this.sub >= TP) this.sub -= TP;
+      this.subO += TP * this.subOctHz * inv; if (this.subO >= TP) this.subO -= TP;
+      this.cadencePhase += this.cadence * inv; if (this.cadencePhase >= 1) this.cadencePhase -= 1;
+
+      const m = this.master;
+      L[i] = Math.tanh((this.alphaLevel * aL + this.gammaLevel * gL + nL + this.subLevel * sub) * m);
+      R[i] = Math.tanh((this.alphaLevel * aR + this.gammaLevel * gR + nR + this.subLevel * sub) * m);
+    }
+  }
+}
+
+/* =========================================================================
+   AUDIO ENGINE: AudioWorklet (off the main thread), ScriptProcessor fallback.
+   ========================================================================= */
+const Engine = {
+  ctx: null, node: null, kernel: null, send: null,
+  tel: [0, 0, 2, 0],            // [cadencePhase, swellPhase, cadenceHz, audioTimeOfBlock]
+  running: false, stopTimer: null,
+
+  async init() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    this.ctx = new AC({ latencyHint: 'playback' });
+    this.ctx.resume();          // must happen synchronously inside the tap
+    try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
+    try {
+      const src = InterstateKernel.toString() + `
+        class InterstateProcessor extends AudioWorkletProcessor {
+          constructor() { super(); this.k = new InterstateKernel(sampleRate); this.n = 0;
+            this.port.onmessage = e => this.k.setTargets(e.data); }
+          process(inputs, outputs) {
+            const out = outputs[0], L = out[0], R = out[1] || out[0];
+            const k = this.k, tel = [k.cadencePhase, k.swellPhase, k.cadence, currentTime];
+            k.render(L, R, L.length);
+            if ((this.n++ & 3) === 0) this.port.postMessage(tel);
+            return true;
+          }
+        }
+        registerProcessor('interstate', InterstateProcessor);`;
+      const url = URL.createObjectURL(new Blob([src], { type: 'application/javascript' }));
+      await this.ctx.audioWorklet.addModule(url);
+      this.node = new AudioWorkletNode(this.ctx, 'interstate', { numberOfInputs: 0, outputChannelCount: [2] });
+      this.node.port.onmessage = e => { this.tel = e.data; };
+      this.send = o => this.node.port.postMessage(o);
+    } catch (err) {
+      // Fallback: same kernel on the main thread.
+      const k = this.kernel = new InterstateKernel(this.ctx.sampleRate);
+      this.node = this.ctx.createScriptProcessor(1024, 1, 2);
+      this.node.onaudioprocess = e => {
+        const tel = [k.cadencePhase, k.swellPhase, k.cadence, e.playbackTime];
+        k.render(e.outputBuffer.getChannelData(0), e.outputBuffer.getChannelData(1), e.outputBuffer.length);
+        this.tel = tel;
+      };
+      this.send = o => k.setTargets(o);
+    }
+    this.node.connect(this.ctx.destination);
+  },
+
+  heardTime() {
+    const c = this.ctx;
+    if (c.getOutputTimestamp) { const ts = c.getOutputTimestamp(); if (ts && ts.contextTime) return ts.contextTime; }
+    return c.currentTime - (c.outputLatency || c.baseLatency || 0);
+  },
+  cadencePhase() {
+    const [p, , hz, t0] = this.tel;
+    const x = p + hz * (this.heardTime() - t0);
+    return x - Math.floor(x);
+  },
+  swell() { return 0.5 - 0.5 * Math.cos(2 * Math.PI * this.tel[1]); },
+
+  async start(targets) {
+    clearTimeout(this.stopTimer);
+    if (!this.ctx) await this.init(); else await this.ctx.resume();
+    this.send(Object.assign({}, targets, { master: 0.8 }));
+    this.running = true;
+  },
+  stop() {
+    if (!this.ctx) return;
+    this.send({ master: 0 });
+    this.running = false;
+    this.stopTimer = setTimeout(() => this.ctx.suspend(), 1000);
+  }
+};
+
+/* =========================================================================
+   RINGS, STATE, MAPPING
+   ========================================================================= */
+const RINGS = [
+  { key: 'outer',  color: '#00F5D4', band: [0.76, 0.98], hit: [0.72, 1.12], arc: 1.02, turns: 1.35, arms: 2, value: 0.50 },
+  { key: 'middle', color: '#FFB300', band: [0.48, 0.70], hit: [0.44, 0.72], arc: 0.73, turns: 1.10, arms: 3, value: 0.60 },
+  { key: 'core',   color: '#FF1F3D', band: [0.04, 0.40], hit: [0.00, 0.44], arc: 0.43, turns: 3.00, arms: 1, value: 0.33 }
+];
+RINGS.forEach(r => { r.rotation = 0; r.active = 0; });
+
+const map = {
+  alpha:   v => 9 + 3 * v,
+  gamma:   v => 30 + 10 * v,
+  cutoff:  v => 200 * Math.pow(10, v),
+  cadence: v => 1.5 + 1.5 * v
+};
+const targets = () => ({
+  alpha: map.alpha(RINGS[0].value), gamma: map.gamma(RINGS[1].value),
+  cutoff: map.cutoff(RINGS[1].value), cadence: map.cadence(RINGS[2].value)
+});
+
+let playing = false, pulse = 0, swell = 0, lastPhase = 0;
+const particles = [];
+
+/* Haptics: Android browsers support vibrate(); iPhone Safari does not. */
+const buzz = ms => { try { navigator.vibrate && navigator.vibrate(ms); } catch (e) {} };
+let tickAcc = 0, lastTick = 0;
+
+/* =========================================================================
+   CANVAS
+   ========================================================================= */
+const cv = document.getElementById('dial'), g = cv.getContext('2d'), stage = document.getElementById('stage');
+let side = 300, R = 140, dpr = 1;
+function resize() {
+  const w = stage.clientWidth, h = stage.clientHeight;
+  side = Math.max(200, Math.min(w, h, 520));
+  dpr = Math.min(window.devicePixelRatio || 1, 3);
+  cv.style.width = cv.style.height = side + 'px';
+  cv.width = cv.height = Math.round(side * dpr);
+  R = side / 2 / 1.10;      // leave room for the outer arc + glow
+}
+new ResizeObserver(resize).observe(stage); resize();
+
+function spiral(r, scale) {
+  const n = Math.max(8, Math.floor(r.turns * 220));
+  g.beginPath();
+  for (let a = 0; a < r.arms; a++) {
+    const off = a / r.arms * Math.PI * 2 + r.rotation;
+    for (let i = 0; i <= n; i++) {
+      const t = i / n, rad = (r.band[0] + (r.band[1] - r.band[0]) * t) * R * scale;
+      const th = off + t * r.turns * Math.PI * 2;
+      const x = rad * Math.cos(th), y = rad * Math.sin(th);
+      i === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
+    }
+  }
+}
+
+function draw(now) {
+  g.setTransform(dpr, 0, 0, dpr, side * dpr / 2, side * dpr / 2);
+  g.clearRect(-side, -side, side * 2, side * 2);
+  g.lineCap = 'round';
+
+  RINGS.forEach((r, idx) => {
+    const act = r.active > 0;
+    let scale = 1, glow = act ? 8 : 2, alpha = act ? 0.95 : (playing ? 0.7 : 0.4);
+    if (idx === 2) { scale = 1 + 0.07 * pulse; glow += 8 * pulse; }
+    if (idx === 1) { scale = 1 + 0.025 * swell; glow += 6 * swell; alpha = Math.min(1, alpha + 0.2 * swell); }
+
+    // core glow disc
+    if (idx === 2) {
+      const gr = g.createRadialGradient(0, 0, 0, 0, 0, r.band[1] * R * scale);
+      gr.addColorStop(0, hexA(r.color, 0.10 + 0.22 * pulse)); gr.addColorStop(1, hexA(r.color, 0));
+      g.fillStyle = gr; g.beginPath(); g.arc(0, 0, r.band[1] * R * scale, 0, Math.PI * 2); g.fill();
+    }
+    // hairline guide
+    g.shadowBlur = 0; g.lineWidth = 0.6; g.strokeStyle = 'rgba(255,255,255,0.08)';
+    g.beginPath(); g.arc(0, 0, r.band[1] * R, 0, Math.PI * 2); g.stroke();
+    // spiral
+    g.shadowColor = r.color; g.shadowBlur = glow;
+    g.strokeStyle = hexA(r.color, alpha); g.lineWidth = 0.9;
+    spiral(r, scale); g.stroke();
+    // value arc: faint track + lit arc from 12 o'clock
+    g.shadowBlur = 0; g.lineWidth = 0.6; g.strokeStyle = hexA(r.color, 0.12);
+    g.beginPath(); g.arc(0, 0, r.arc * R, 0, Math.PI * 2); g.stroke();
+    g.shadowBlur = act ? 8 : 3; g.lineWidth = 1.8; g.strokeStyle = hexA(r.color, act ? 1 : 0.75);
+    g.beginPath(); g.arc(0, 0, r.arc * R, -Math.PI / 2, -Math.PI / 2 + r.value * Math.PI * 2); g.stroke();
+  });
+
+  // particles, additive
+  g.shadowBlur = 0; g.globalCompositeOperation = 'lighter';
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i], age = now - p.born;
+    if (age > p.life) { particles.splice(i, 1); continue; }
+    const t = age / p.life, th = p.angle + p.drift * age, rad = p.r * R, s = p.size * (1 - 0.5 * t);
+    g.fillStyle = hexA(p.color, (1 - t) * (1 - t));
+    g.beginPath(); g.arc(rad * Math.cos(th), rad * Math.sin(th), s, 0, Math.PI * 2); g.fill();
+  }
+  g.globalCompositeOperation = 'source-over';
+}
+
+function hexA(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a.toFixed(3)})`;
+}
+
+/* =========================================================================
+   FRAME LOOP: breathing core + thud are phase-locked to the audio clock
+   ========================================================================= */
+function frame(ms) {
+  const now = ms / 1000;
+  if (playing && Engine.ctx) {
+    const ph = Engine.cadencePhase();
+    const c = 0.5 + 0.5 * Math.cos(2 * Math.PI * ph); pulse = c * c;
+    if (lastPhase > 0.75 && ph < 0.25) buzz(30);          // heavy thud at each peak
+    lastPhase = ph;
+    swell = Engine.swell();
+  } else {
+    pulse = Math.max(0, pulse - 0.04); swell = Math.max(0, swell - 0.02);
+  }
+  draw(now);
+  updateReadouts();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+/* =========================================================================
+   READOUTS
+   ========================================================================= */
+const $ = id => document.getElementById(id);
+let lastText = '';
+function updateReadouts() {
+  const t = targets();
+  const cut = t.cutoff < 1000 ? `${t.cutoff.toFixed(0)} Hz` : `${(t.cutoff / 1000).toFixed(2)} kHz`;
+  const sw = playing ? (swell >= 0.5 ? 'BROWN ▲' : 'PINK ▼') : '—';
+  const text = [t.alpha.toFixed(1), t.gamma.toFixed(1), cut, sw, t.cadence.toFixed(2), playing].join('|');
+  if (text === lastText) return; lastText = text;
+  $('v-outer').textContent = `${t.alpha.toFixed(1)} Hz`;
+  $('v-middle').textContent = `${t.gamma.toFixed(1)} Hz`;
+  $('c-middle').textContent = `DRIVE · γ   LPF ${cut}   SWELL ${sw}`;
+  $('v-core').textContent = `${t.cadence.toFixed(2)} Hz`;
+  $('c-core').textContent = `CADENCE RATE · ${(t.cadence * 60).toFixed(0)} BPM`;
+  $('state').textContent = playing ? 'ACTIVE' : 'TAP CORE TO BEGIN';
+  $('dot').classList.toggle('on', playing);
+}
+
+/* =========================================================================
+   GESTURES: one tracked pointer per ring → true multi-touch
+   ========================================================================= */
+const pointers = new Map();
+function polar(e) {
+  const b = cv.getBoundingClientRect();
+  const x = e.clientX - b.left - b.width / 2, y = e.clientY - b.top - b.height / 2;
+  return { angle: Math.atan2(y, x), dist: Math.hypot(x, y) / R };
+}
+function ringAt(d) { return RINGS.findIndex(r => d >= r.hit[0] && d < r.hit[1]); }
+
+cv.addEventListener('pointerdown', e => {
+  const { angle, dist } = polar(e), idx = ringAt(dist);
+  if (idx < 0) return;
+  cv.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, { idx, last: angle, x: e.clientX, y: e.clientY, moved: 0, t: performance.now() });
+  RINGS[idx].active++;
+});
+
+cv.addEventListener('pointermove', e => {
+  const p = pointers.get(e.pointerId); if (!p) return;
+  const { angle, dist } = polar(e);
+  p.moved = Math.max(p.moved, Math.hypot(e.clientX - p.x, e.clientY - p.y));
+  if (dist < 0.06) { p.last = angle; return; }
+  let d = angle - p.last;
+  if (d > Math.PI) d -= 2 * Math.PI; else if (d <= -Math.PI) d += 2 * Math.PI;
+  p.last = angle;
+  const nowMs = performance.now(), dt = Math.max(1 / 240, (nowMs - p.t) / 1000); p.t = nowMs;
+  rotate(p.idx, d, angle, dt);
+});
+
+function end(e) {
+  const p = pointers.get(e.pointerId); if (!p) return;
+  pointers.delete(e.pointerId);
+  RINGS[p.idx].active = Math.max(0, RINGS[p.idx].active - 1);
+  if (p.idx === 2 && p.moved < 8) toggle();
+}
+cv.addEventListener('pointerup', end);
+cv.addEventListener('pointercancel', end);
+
+function rotate(idx, delta, angle, dt) {
+  const r = RINGS[idx], old = r.value;
+  r.value = Math.min(1, Math.max(0, old + delta / (2 * Math.PI)));   // one turn = full range
+  const eff = (r.value - old) * 2 * Math.PI;
+  if (!eff) return;                                                   // pinned at an end-stop
+  r.rotation += eff;
+  const w = eff / dt;
+  emit(r, angle, w);
+  if (Engine.send) Engine.send(targets());
+  if (idx === 0) {                                                    // detent ticks every 6°
+    tickAcc += Math.abs(eff);
+    if (tickAcc >= Math.PI / 30) { tickAcc %= Math.PI / 30; const n = performance.now(); if (n - lastTick > 22) { buzz(6); lastTick = n; } }
+  } else if (idx === 1) {
+    if (performance.now() - lastTick > 70 - 40 * r.value) { buzz(12); lastTick = performance.now(); }
+  }
+}
+
+function emit(r, angle, w) {
+  const speed = Math.abs(w); if (speed < 0.05) return;
+  const dir = w >= 0 ? 1 : -1, count = Math.min(5, 1 + Math.floor(speed / 3)), now = performance.now() / 1000;
+  const lo = r.key === 'core' ? Math.max(r.band[0], 0.12) : r.band[0];
+  for (let i = 0; i < count; i++) {
+    particles.push({
+      color: r.color, angle: angle - dir * i * 0.035 + (Math.random() - 0.5) * 0.04,
+      r: lo + Math.random() * (r.band[1] - lo), drift: -dir * Math.min(speed, 12) * 0.12,
+      born: now, life: 0.65 + Math.random() * 0.6, size: 0.9 + Math.random() * 1.5
+    });
+  }
+  if (particles.length > 700) particles.splice(0, particles.length - 700);
+}
+
+/* =========================================================================
+   TRANSPORT + keyboard access
+   ========================================================================= */
+let wakeLock = null;
+async function toggle() {
+  if (playing) {
+    Engine.stop(); playing = false;
+    try { wakeLock && wakeLock.release(); } catch (e) {} wakeLock = null;
+  } else {
+    playing = true; lastPhase = 0;
+    try { await Engine.start(targets()); }
+    catch (err) { playing = false; $('state').textContent = 'AUDIO COULD NOT START. TAP AGAIN'; $('state').classList.add('err'); return; }
+    $('state').classList.remove('err');
+    buzz(20);
+    try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  }
+}
+cv.addEventListener('keydown', e => {
+  if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); toggle(); }
+  const steps = { ArrowUp: [0, 1], ArrowDown: [0, -1], ArrowRight: [1, 1], ArrowLeft: [1, -1], PageUp: [2, 1], PageDown: [2, -1] };
+  if (steps[e.key]) { e.preventDefault(); const [i, s] = steps[e.key]; rotate(i, s * 0.05 * 2 * Math.PI, -Math.PI / 2, 0.05); }
+});
+</script>
+</body></html>
