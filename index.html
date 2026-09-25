@@ -8,14 +8,17 @@
   :root {
     color-scheme: dark;
     --black: #000000;
-    --teal: #00F5D4;
-    --amber: #FFB300;
-    --crimson: #FF1F3D;
-    --label: #7C838C;      /* cool grey, biased toward the teal */
-    --faint: #1A1D21;
+    --turq: #2EE6D6;       /* 01 */
+    --blue: #4A7BFF;       /* 02 */
+    --violet: #9D5CFF;     /* 03 */
+    --label: #8A8DB0;      /* lavender grey */
+    --faint: #15142A;
     --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   }
   html, body { height: 100%; background: var(--black); }
+  body { background: radial-gradient(120% 70% at 50% 42%, #0B0920 0%, #05040E 45%, #000 80%) var(--black); }
+  #dust { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .app { position: relative; }
   body {
     margin: 0;
     color: var(--label);
@@ -54,20 +57,21 @@
   .row .name { font-size: 11px; font-weight: 500; letter-spacing: 0.04em; }
   .row .cap { font-size: 9px; letter-spacing: 0.06em; opacity: 0.75; margin-top: 3px; }
   .row .val { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .outer .bar { background: var(--teal); box-shadow: 0 0 6px var(--teal); }   .outer .val { color: var(--teal); }
-  .middle .bar { background: var(--amber); box-shadow: 0 0 6px var(--amber); } .middle .val { color: var(--amber); }
-  .core .bar { background: var(--crimson); box-shadow: 0 0 6px var(--crimson); } .core .val { color: var(--crimson); }
+  .outer .bar { background: var(--turq); box-shadow: 0 0 8px var(--turq); }     .outer .val { color: var(--turq); text-shadow: 0 0 10px rgba(46,230,214,.45); }
+  .middle .bar { background: var(--blue); box-shadow: 0 0 8px var(--blue); }     .middle .val { color: var(--blue); text-shadow: 0 0 10px rgba(74,123,255,.45); }
+  .core .bar { background: var(--violet); box-shadow: 0 0 8px var(--violet); }   .core .val { color: var(--violet); text-shadow: 0 0 10px rgba(157,92,255,.45); }
 
   .status {
     display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
     font-size: 9px; letter-spacing: 0.08em; padding-top: 4px;
   }
   .dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--label); margin-right: 8px; vertical-align: middle; }
-  .dot.on { background: var(--crimson); box-shadow: 0 0 6px var(--crimson); }
+  .dot.on { background: var(--violet); box-shadow: 0 0 8px var(--violet); }
   .note { font-size: 9px; letter-spacing: 0.04em; opacity: 0.6; text-align: center; max-width: 420px; line-height: 1.5; margin: 0; }
-  .err { color: var(--crimson); }
+  .err { color: var(--violet); }
 </style>
 </head><body>
+<canvas id="dust" aria-hidden="true"></canvas>
 <div class="app">
   <h1 class="wordmark">INTERSTATE</h1>
 
@@ -83,13 +87,13 @@
     </div>
     <div class="row middle">
       <span class="bar"></span>
-      <div><div class="name">02 / LIBIDO CORE</div><div class="cap" id="c-middle">DRIVE · γ   LPF 794 Hz   SWELL —</div></div>
+      <div><div class="name">02 / LIBIDO CORE</div><div class="cap" id="c-middle">DRIVE · γ   BROWN + PINK WAVES   LPF 794 Hz</div></div>
       <span class="val" id="v-middle">36.0 Hz</span>
     </div>
     <div class="row core">
       <span class="bar"></span>
-      <div><div class="name">03 / PELVIC CADENCE</div><div class="cap" id="c-core">CADENCE RATE · 119 BPM</div></div>
-      <span class="val" id="v-core">1.99 Hz</span>
+      <div><div class="name">03 / PELVIC CADENCE</div><div class="cap" id="c-core">SUB WAVE · ONE EVERY 9.1 s</div></div>
+      <span class="val" id="v-core">6.6 /min</span>
     </div>
     <div class="status">
       <span><span class="dot" id="dot"></span><span id="state">TAP CORE TO BEGIN</span></span>
@@ -111,18 +115,26 @@ class InterstateKernel {
     this.sr = sr;
     // tuning
     this.alphaC = 220; this.gammaC = 330; this.subHz = 110; this.subOctHz = 55;
-    this.alphaLevel = 0.16; this.gammaLevel = 0.09; this.brownLevel = 0.22; this.pinkLevel = 0.15;
-    this.subLevel = 0.30; this.subFloor = 0.25;
-    this.swellPeriod = 10; this.swellDriftHz = 0.013; this.swellDriftAmt = 0.15;
-    this.swellFloor = 0.30; this.swellFilterMod = 0.35;
+    this.alphaLevel = 0.24; this.gammaLevel = 0.10; this.brownLevel = 0.26; this.pinkLevel = 0.18;
+    this.subLevel = 0.32;
+    this.waveFloor = 0.08;       // each layer fades almost to silence between waves
+    this.subFloor = 0.12;
+    this.filterMod = 0.35;       // LPF opens up to +35 % on noise crests
+    // Independent, unsynchronised waves: incommensurate periods, each with its own
+    // slow ±15 % rate drift and a random starting point.  [period s, drift Hz]
+    const W = [[13.7, 0.011], [17.3, 0.017], [11.1, 0.013], [14.9, 0.009]];   // alpha, gamma, brown, pink
+    this.waves = W.map(([period, drift]) => ({ inc: 1 / period, drift, ph: Math.random(), dph: Math.random() * 6.283 }));
     // targets + smoothed values
-    this.t = { alpha: 10.5, gamma: 36, cutoff: 794, cadence: 2, master: 0 };
-    this.alpha = 10.5; this.gamma = 36; this.cutoff = 794; this.cadence = 2; this.master = 0;
+    this.t = { alpha: 10.5, gamma: 36, cutoff: 794, cadence: 0.11, master: 0 };
+    this.alpha = 10.5; this.gamma = 36; this.cutoff = 794; this.cadence = 0.11; this.master = 0;
     this.pc = 1 - Math.exp(-1 / (0.050 * sr));
-    this.mc = 1 - Math.exp(-1 / (0.350 * sr));
+    this.cc = 1 - Math.exp(-1 / (1.5 * sr));      // cadence glides slowly: no sudden rushes
+    this.mc = 1 - Math.exp(-1 / (1.2 * sr));      // master fades over ~1–2 s
     // phases
     this.aL = 0; this.aR = 0; this.gL = 0; this.gR = 0; this.sub = 0; this.subO = 0;
-    this.cadencePhase = 0; this.swellPhase = 0; this.driftPhase = 0;
+    this.cadencePhase = 0.5;                      // start in a trough: the first wave rises in
+    this.env = new Float64Array(5);               // last envelopes: alpha, gamma, brown, pink
+    this.envNext = new Float64Array(5);           // preallocated: no garbage on the audio thread
     // noise
     this.brL = 0; this.brR = 0;
     this.pkL = new Float64Array(7); this.pkR = new Float64Array(7);
@@ -159,16 +171,34 @@ class InterstateKernel {
     this.a1 = (-2 * c) / a0; this.a2 = (1 - al) / a0; this.lastCut = fc;
   }
   render(L, R, n) {
-    const t = this.t, TP = 2 * Math.PI, inv = 1 / this.sr;
-    const blockSwell = 0.5 - 0.5 * Math.cos(TP * this.swellPhase);
-    const eff = this.cutoff * (1 + this.swellFilterMod * blockSwell);
+    const t = this.t, TP = 2 * Math.PI, inv = 1 / this.sr, fl = this.waveFloor;
+    const W = this.waves;
+
+    // Wave envelopes move over seconds: compute once per block (128–1024 samples),
+    // then ramp linearly across the block so there are no steps.
+    const e0 = this.env, e1 = this.envNext;
+    for (let k = 0; k < 4; k++) {
+      const w = W[k];
+      w.ph += w.inc * (1 + 0.15 * Math.sin(w.dph)) * n * inv; w.ph -= Math.floor(w.ph);
+      w.dph += TP * w.drift * n * inv; if (w.dph >= TP) w.dph -= TP;
+      e1[k] = 0.5 - 0.5 * Math.cos(TP * w.ph);
+    }
+    const noiseEnv = 0.5 * (e1[2] + e1[3]);
+    const eff = this.cutoff * (1 + this.filterMod * noiseEnv);
     if (Math.abs(eff - this.lastCut) > 0.5) this.updateFilter(eff);
     const b0 = this.b0, b1 = this.b1, b2 = this.b2, a1 = this.a1, a2 = this.a2;
+
     for (let i = 0; i < n; i++) {
+      const x = i / n;
+      const gA = this.alphaLevel * (fl + (1 - fl) * (e0[0] + (e1[0] - e0[0]) * x));
+      const gG = this.gammaLevel * (fl + (1 - fl) * (e0[1] + (e1[1] - e0[1]) * x));
+      const gB = this.brownLevel * (fl + (1 - fl) * (e0[2] + (e1[2] - e0[2]) * x));
+      const gP = this.pinkLevel  * (fl + (1 - fl) * (e0[3] + (e1[3] - e0[3]) * x));
+
       this.alpha += (t.alpha - this.alpha) * this.pc;
       this.gamma += (t.gamma - this.gamma) * this.pc;
       this.cutoff += (t.cutoff - this.cutoff) * this.pc;
-      this.cadence += (t.cadence - this.cadence) * this.pc;
+      this.cadence += (t.cadence - this.cadence) * this.cc;
       this.master += (t.master - this.master) * this.mc;
 
       // 01 alpha pair
@@ -179,30 +209,25 @@ class InterstateKernel {
       const gL = Math.sin(this.gL), gR = Math.sin(this.gR);
       this.gL += TP * this.gammaC * inv; if (this.gL >= TP) this.gL -= TP;
       this.gR += TP * (this.gammaC + this.gamma) * inv; if (this.gR >= TP) this.gR -= TP;
-      // 02 noise swells
-      const sw = 0.5 - 0.5 * Math.cos(TP * this.swellPhase);
-      this.swellPhase += (1 / this.swellPeriod) * (1 + this.swellDriftAmt * Math.sin(this.driftPhase)) * inv;
-      if (this.swellPhase >= 1) this.swellPhase -= 1;
-      this.driftPhase += TP * this.swellDriftHz * inv; if (this.driftPhase >= TP) this.driftPhase -= TP;
-      const bg = this.brownLevel * (this.swellFloor + (1 - this.swellFloor) * sw);
-      const pg = this.pinkLevel * (this.swellFloor + (1 - this.swellFloor) * (1 - sw));
+      // 02 brown + pink, each on its own wave, then LPF
       this.brL = (this.brL + 0.02 * this.white()) / 1.02;
       this.brR = (this.brR + 0.02 * this.white()) / 1.02;
       const pL = this.pink(this.pkL, this.white()), pR = this.pink(this.pkR, this.white());
-      const xL = this.brL * 3.5 * bg + pL * pg, xR = this.brR * 3.5 * bg + pR * pg;
+      const xL = this.brL * 3.5 * gB + pL * gP, xR = this.brR * 3.5 * gB + pR * gP;
       const nL = b0 * xL + this.z1L; this.z1L = b1 * xL - a1 * nL + this.z2L; this.z2L = b2 * xL - a2 * nL;
       const nR = b0 * xR + this.z1R; this.z1R = b1 * xR - a1 * nR + this.z2R; this.z2R = b2 * xR - a2 * nR;
-      // 03 sub + cadence envelope (peak at phase 0)
-      const c = 0.5 + 0.5 * Math.cos(TP * this.cadencePhase), env = c * c;
+      // 03 sub: a slow wave at the cadence rate (crest at phase 0)
+      const env = 0.5 + 0.5 * Math.cos(TP * this.cadencePhase);
       const sub = (Math.sin(this.sub) + 0.35 * Math.sin(this.subO)) * (this.subFloor + (1 - this.subFloor) * env);
       this.sub += TP * this.subHz * inv; if (this.sub >= TP) this.sub -= TP;
       this.subO += TP * this.subOctHz * inv; if (this.subO >= TP) this.subO -= TP;
       this.cadencePhase += this.cadence * inv; if (this.cadencePhase >= 1) this.cadencePhase -= 1;
 
       const m = this.master;
-      L[i] = Math.tanh((this.alphaLevel * aL + this.gammaLevel * gL + nL + this.subLevel * sub) * m);
-      R[i] = Math.tanh((this.alphaLevel * aR + this.gammaLevel * gR + nR + this.subLevel * sub) * m);
+      L[i] = Math.tanh((gA * aL + gG * gL + nL + this.subLevel * sub) * m);
+      R[i] = Math.tanh((gA * aR + gG * gR + nR + this.subLevel * sub) * m);
     }
+    this.env = e1; this.envNext = e0;
   }
 }
 
@@ -211,7 +236,7 @@ class InterstateKernel {
    ========================================================================= */
 const Engine = {
   ctx: null, node: null, kernel: null, send: null,
-  tel: [0, 0, 2, 0],            // [cadencePhase, swellPhase, cadenceHz, audioTimeOfBlock]
+  tel: [0.5, 0.11, 0, 0, 0, 0],  // [cadencePhase, cadenceHz, audioTimeOfBlock, alphaEnv, gammaEnv, noiseEnv]
   running: false, stopTimer: null,
 
   async init() {
@@ -226,8 +251,9 @@ const Engine = {
             this.port.onmessage = e => this.k.setTargets(e.data); }
           process(inputs, outputs) {
             const out = outputs[0], L = out[0], R = out[1] || out[0];
-            const k = this.k, tel = [k.cadencePhase, k.swellPhase, k.cadence, currentTime];
+            const k = this.k, ph = k.cadencePhase, hz = k.cadence, t0 = currentTime;
             k.render(L, R, L.length);
+            const tel = [ph, hz, t0, k.env[0], k.env[1], 0.5 * (k.env[2] + k.env[3])];
             if ((this.n++ & 3) === 0) this.port.postMessage(tel);
             return true;
           }
@@ -243,9 +269,9 @@ const Engine = {
       const k = this.kernel = new InterstateKernel(this.ctx.sampleRate);
       this.node = this.ctx.createScriptProcessor(1024, 1, 2);
       this.node.onaudioprocess = e => {
-        const tel = [k.cadencePhase, k.swellPhase, k.cadence, e.playbackTime];
+        const ph = k.cadencePhase, hz = k.cadence, t0 = e.playbackTime;
         k.render(e.outputBuffer.getChannelData(0), e.outputBuffer.getChannelData(1), e.outputBuffer.length);
-        this.tel = tel;
+        this.tel = [ph, hz, t0, k.env[0], k.env[1], 0.5 * (k.env[2] + k.env[3])];
       };
       this.send = o => k.setTargets(o);
     }
@@ -258,11 +284,11 @@ const Engine = {
     return c.currentTime - (c.outputLatency || c.baseLatency || 0);
   },
   cadencePhase() {
-    const [p, , hz, t0] = this.tel;
+    const [p, hz, t0] = this.tel;
     const x = p + hz * (this.heardTime() - t0);
     return x - Math.floor(x);
   },
-  swell() { return 0.5 - 0.5 * Math.cos(2 * Math.PI * this.tel[1]); },
+  waves() { return [this.tel[3], this.tel[4], this.tel[5]]; },
 
   async start(targets) {
     clearTimeout(this.stopTimer);
@@ -274,7 +300,7 @@ const Engine = {
     if (!this.ctx) return;
     this.send({ master: 0 });
     this.running = false;
-    this.stopTimer = setTimeout(() => this.ctx.suspend(), 1000);
+    this.stopTimer = setTimeout(() => this.ctx.suspend(), 3000);
   }
 };
 
@@ -282,24 +308,24 @@ const Engine = {
    RINGS, STATE, MAPPING
    ========================================================================= */
 const RINGS = [
-  { key: 'outer',  color: '#00F5D4', band: [0.76, 0.98], hit: [0.72, 1.12], arc: 1.02, turns: 1.35, arms: 2, value: 0.50 },
-  { key: 'middle', color: '#FFB300', band: [0.48, 0.70], hit: [0.44, 0.72], arc: 0.73, turns: 1.10, arms: 3, value: 0.60 },
-  { key: 'core',   color: '#FF1F3D', band: [0.04, 0.40], hit: [0.00, 0.44], arc: 0.43, turns: 3.00, arms: 1, value: 0.33 }
+  { key: 'outer',  color: '#2EE6D6', color2: '#4A7BFF', idle:  0.55, band: [0.76, 0.98], hit: [0.72, 1.12], arc: 1.02, turns: 1.35, arms: 2, value: 0.50 },
+  { key: 'middle', color: '#4A7BFF', color2: '#9D5CFF', idle: -0.8, band: [0.48, 0.70], hit: [0.44, 0.72], arc: 0.73, turns: 1.10, arms: 3, value: 0.60 },
+  { key: 'core',   color: '#9D5CFF', color2: '#2EE6D6', idle:  1.2, band: [0.04, 0.40], hit: [0.00, 0.44], arc: 0.43, turns: 3.00, arms: 1, value: 0.33 }
 ];
-RINGS.forEach((r, i) => { r.rotation = 0; r.active = 0; r.grip = null; r.press = 0; r.teeth = i === 2 ? 36 : 60; });
+RINGS.forEach((r, i) => { r.drift = 0; r.rotation = 0; r.active = 0; r.grip = null; r.press = 0; r.teeth = i === 2 ? 36 : 60; });
 
 const map = {
   alpha:   v => 9 + 3 * v,
   gamma:   v => 30 + 10 * v,
   cutoff:  v => 200 * Math.pow(10, v),
-  cadence: v => 1.5 + 1.5 * v
+  cadence: v => (4 + 8 * v) / 60       // 4–12 waves per minute (0.067–0.2 Hz)
 };
 const targets = () => ({
   alpha: map.alpha(RINGS[0].value), gamma: map.gamma(RINGS[1].value),
   cutoff: map.cutoff(RINGS[1].value), cadence: map.cadence(RINGS[2].value)
 });
 
-let playing = false, pulse = 0, swell = 0, lastPhase = 0;
+let playing = false, pulse = 0, swell = 0, waveA = 0, lastPhase = 0;
 const particles = [];
 
 /* Haptics: Android browsers support vibrate(); iPhone Safari does not. */
@@ -321,11 +347,11 @@ function resize() {
 }
 new ResizeObserver(resize).observe(stage); resize();
 
-function spiral(r, scale) {
+function spiral(r, scale, ang) {
   const n = Math.max(8, Math.floor(r.turns * 220));
   g.beginPath();
   for (let a = 0; a < r.arms; a++) {
-    const off = a / r.arms * Math.PI * 2 + r.rotation;
+    const off = a / r.arms * Math.PI * 2 + ang;
     for (let i = 0; i <= n; i++) {
       const t = i / n, rad = (r.band[0] + (r.band[1] - r.band[0]) * t) * R * scale;
       const th = off + t * r.turns * Math.PI * 2;
@@ -335,73 +361,147 @@ function spiral(r, scale) {
   }
 }
 
+/* A slow conic sweep between the ring's two hues (turquoise → blue → violet),
+   rotating with the ring. Falls back to the solid hue on older browsers. */
+function ringStroke(r, ang, a) {
+  if (!g.createConicGradient) return hexA(r.color, a);
+  const cg = g.createConicGradient(ang, 0, 0);
+  cg.addColorStop(0.00, hexA(r.color, a));
+  cg.addColorStop(0.50, hexA(r.color2, a));
+  cg.addColorStop(1.00, hexA(r.color, a));
+  return cg;
+}
+
+let lastDraw = 0;
+const reduceMotion = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
 function draw(now) {
+  const dt = Math.min(0.05, lastDraw ? now - lastDraw : 0.016); lastDraw = now;
   g.setTransform(dpr, 0, 0, dpr, side * dpr / 2, side * dpr / 2);
-  g.clearRect(-side, -side, side * 2, side * 2);
+
+  // HALO TRAILS: fade the previous frame instead of clearing it, so every moving
+  // line leaves a luminous afterimage. Slower fade while a ring is being turned.
+  const turning = RINGS.some(r => r.active > 0);
+  g.globalCompositeOperation = 'destination-out';
+  g.fillStyle = `rgba(0,0,0,${turning ? 0.06 : 0.12})`;
+  g.fillRect(-side, -side, side * 2, side * 2);
+  // Rings draw normally (they settle at their own brightness when still);
+  // only the motes add light.
+  g.globalCompositeOperation = 'source-over';
   g.lineCap = 'round';
 
   RINGS.forEach((r, idx) => {
     const act = r.active > 0;
-    let scale = 1, glow = act ? 8 : 2, alpha = act ? 0.95 : (playing ? 0.7 : 0.4);
-    // Pressed knob sinks in slightly (eased).
     r.press += ((act ? 1 : 0) - r.press) * 0.25;
-    const sink = 1 - 0.015 * r.press;
-    if (idx === 2) { scale = 1 + 0.07 * pulse; glow += 8 * pulse; }
-    if (idx === 1) { scale = 1 + 0.025 * swell; glow += 6 * swell; alpha = Math.min(1, alpha + 0.2 * swell); }
+    // Each ring is one streak of light spinning on its orbit (a chakra wheel):
+    // idle spin + the knob's own rotation, so turning a ring visibly drives it.
+    r.drift += r.idle * dt * (playing ? 1.4 : 1);
+    const head = r.rotation * 1.5 + r.drift;
+    const orbit = ((r.band[0] + r.band[1]) / 2) * R;
+    let energy = act ? 1 : (playing ? 0.75 : 0.55);
+    if (idx === 0) energy += 0.25 * waveA;
+    if (idx === 1) energy += 0.25 * swell;
+    if (idx === 2) energy += 0.35 * pulse;
+    const dir = Math.sign(r.idle);
+    const tail = 1.6 + 0.8 * r.press;                        // radians of tail behind the head
 
-    // core glow disc
+    // Faint orbit: where to put your finger.
+    g.globalCompositeOperation = 'source-over';
+    g.shadowBlur = 0; g.lineWidth = 0.6; g.strokeStyle = hexA(r.color, 0.06 + 0.06 * r.press);
+    g.beginPath(); g.arc(0, 0, orbit, 0, Math.PI * 2); g.stroke();
+
+    // Core: a breathing violet orb under its streak.
     if (idx === 2) {
-      const gr = g.createRadialGradient(0, 0, 0, 0, 0, r.band[1] * R * scale);
-      gr.addColorStop(0, hexA(r.color, 0.10 + 0.22 * pulse)); gr.addColorStop(1, hexA(r.color, 0));
-      g.fillStyle = gr; g.beginPath(); g.arc(0, 0, r.band[1] * R * scale, 0, Math.PI * 2); g.fill();
+      const rr = R * (0.34 + 0.05 * pulse);
+      const gr = g.createRadialGradient(0, 0, 0, 0, 0, rr);
+      gr.addColorStop(0.0, hexA('#C9A8FF', 0.10 + 0.14 * pulse));
+      gr.addColorStop(0.35, hexA('#9D5CFF', 0.06 + 0.08 * pulse));
+      gr.addColorStop(0.75, hexA('#4A7BFF', 0.025));
+      gr.addColorStop(1.0, 'rgba(0,0,0,0)');
+      g.fillStyle = gr; g.beginPath(); g.arc(0, 0, rr, 0, Math.PI * 2); g.fill();
     }
-    // hairline guide
-    g.shadowBlur = 0; g.lineWidth = 0.6; g.strokeStyle = 'rgba(255,255,255,0.08)';
-    g.beginPath(); g.arc(0, 0, r.band[1] * R, 0, Math.PI * 2); g.stroke();
-    // spiral
-    g.shadowColor = r.color; g.shadowBlur = glow;
-    g.strokeStyle = hexA(r.color, alpha); g.lineWidth = 0.9;
-    spiral(r, scale * sink); g.stroke();
 
-    // Knurled gear rim: one tooth per haptic detent, turning 1:1 with the knob.
-    const rimIn = (r.band[1] + 0.008) * R * sink, rimOut = rimIn + (0.018 + 0.012 * r.press) * R;
-    g.shadowBlur = r.press * 6; g.lineWidth = 0.8;
-    g.strokeStyle = hexA(r.color, 0.22 + 0.55 * r.press + (playing ? 0.1 : 0));
-    g.beginPath();
-    for (let k = 0; k < r.teeth; k++) {
-      const th = r.rotation + k / r.teeth * Math.PI * 2, c = Math.cos(th), s = Math.sin(th);
-      g.moveTo(rimIn * c, rimIn * s); g.lineTo(rimOut * c, rimOut * s);
+    // The streak: 36 short segments from the head back along the orbit, fading
+    // and thinning, hue sliding from the ring's colour into its neighbour's.
+    g.globalCompositeOperation = 'lighter';
+    g.lineCap = 'round';
+    const N = 36;
+    for (let i = 0; i < N; i++) {
+      const t0 = i / N, t1 = (i + 1) / N;
+      const a0 = head - dir * tail * t0, a1 = head - dir * tail * t1;
+      const fade = Math.pow(1 - t0, 1.8);
+      const col = t0 < 0.4 ? r.color : r.color2;
+      // wide soft halo
+      g.shadowBlur = 0; g.lineWidth = 10 * fade + 2;
+      g.strokeStyle = hexA(col, 0.035 * fade * energy);
+      g.beginPath(); g.arc(0, 0, orbit, Math.min(a0, a1), Math.max(a0, a1)); g.stroke();
+      // bright filament
+      g.shadowColor = col; g.shadowBlur = 10 * fade;
+      g.lineWidth = 0.6 + 2.4 * fade;
+      g.strokeStyle = hexA(col, 0.55 * fade * energy);
+      g.beginPath(); g.arc(0, 0, orbit, Math.min(a0, a1), Math.max(a0, a1)); g.stroke();
     }
-    g.stroke();
+    // Head: a hot white-tinted point.
+    const hx = orbit * Math.cos(head), hy = orbit * Math.sin(head);
+    const hg = g.createRadialGradient(hx, hy, 0, hx, hy, 14 + 6 * r.press);
+    hg.addColorStop(0, hexA('#FFFFFF', 0.55 * energy));
+    hg.addColorStop(0.25, hexA(r.color, 0.45 * energy));
+    hg.addColorStop(1, 'rgba(0,0,0,0)');
+    g.shadowBlur = 0; g.fillStyle = hg;
+    g.beginPath(); g.arc(hx, hy, 14 + 6 * r.press, 0, Math.PI * 2); g.fill();
 
-    // Grip glow under the finger while pressed.
+    // Value marker: one small still node on the orbit (12 o'clock = minimum).
+    g.globalCompositeOperation = 'source-over';
+    const v = -Math.PI / 2 + r.value * Math.PI * 2;
+    g.shadowColor = r.color; g.shadowBlur = 6; g.fillStyle = hexA(r.color, 0.5 + 0.4 * r.press);
+    g.beginPath(); g.arc(orbit * Math.cos(v), orbit * Math.sin(v), 1.6 + 0.8 * r.press, 0, Math.PI * 2); g.fill();
+
+    // Grip halo under the finger.
     if (r.grip !== null && r.press > 0.05) {
-      const gx = Math.cos(r.grip) * (rimIn + rimOut) / 2, gy = Math.sin(r.grip) * (rimIn + rimOut) / 2;
-      const gg = g.createRadialGradient(gx, gy, 0, gx, gy, 0.09 * R);
-      gg.addColorStop(0, hexA(r.color, 0.35 * r.press)); gg.addColorStop(1, hexA(r.color, 0));
-      g.shadowBlur = 0; g.fillStyle = gg; g.beginPath(); g.arc(gx, gy, 0.09 * R, 0, Math.PI * 2); g.fill();
+      const gx = Math.cos(r.grip) * orbit, gy = Math.sin(r.grip) * orbit;
+      const gg = g.createRadialGradient(gx, gy, 0, gx, gy, 0.14 * R);
+      gg.addColorStop(0, hexA(r.color, 0.18 * r.press)); gg.addColorStop(1, 'rgba(0,0,0,0)');
+      g.shadowBlur = 0; g.fillStyle = gg; g.beginPath(); g.arc(gx, gy, 0.14 * R, 0, Math.PI * 2); g.fill();
     }
-    // value arc: faint track + lit arc from 12 o'clock
-    g.shadowBlur = 0; g.lineWidth = 0.6; g.strokeStyle = hexA(r.color, 0.12);
-    g.beginPath(); g.arc(0, 0, r.arc * R, 0, Math.PI * 2); g.stroke();
-    g.shadowBlur = act ? 8 : 3; g.lineWidth = 1.8; g.strokeStyle = hexA(r.color, act ? 1 : 0.75);
-    const head = -Math.PI / 2 + r.value * Math.PI * 2;
-    g.beginPath(); g.arc(0, 0, r.arc * R, -Math.PI / 2, head); g.stroke();
-    // Knob pointer: bright node at the arc head.
-    g.shadowBlur = 8; g.fillStyle = r.color;
-    g.beginPath(); g.arc(r.arc * R * Math.cos(head), r.arc * R * Math.sin(head), 2.2 + 0.8 * r.press, 0, Math.PI * 2); g.fill();
   });
 
-  // particles, additive
+  // Halo motes: soft glowing nodes that sweep behind the rotation and drift
+  // outward as they fade. The frame fade above stretches each into a comet tail.
   g.shadowBlur = 0; g.globalCompositeOperation = 'lighter';
   for (let i = particles.length - 1; i >= 0; i--) {
     const p = particles[i], age = now - p.born;
     if (age > p.life) { particles.splice(i, 1); continue; }
-    const t = age / p.life, th = p.angle + p.drift * age, rad = p.r * R, s = p.size * (1 - 0.5 * t);
-    g.fillStyle = hexA(p.color, (1 - t) * (1 - t));
-    g.beginPath(); g.arc(rad * Math.cos(th), rad * Math.sin(th), s, 0, Math.PI * 2); g.fill();
+    const t = age / p.life, th = p.angle + p.drift * age, rad = (p.r + 0.035 * age) * R;
+    const x = rad * Math.cos(th), y = rad * Math.sin(th), a = (1 - t) * (1 - t);
+    const col = t < 0.5 ? p.color : p.color2;              // hue shifts as it fades
+    g.fillStyle = hexA(col, 0.10 * a);
+    g.beginPath(); g.arc(x, y, p.size * 3.2, 0, Math.PI * 2); g.fill();
+    g.fillStyle = hexA(col, 0.55 * a);
+    g.beginPath(); g.arc(x, y, p.size * (1 - 0.4 * t), 0, Math.PI * 2); g.fill();
   }
   g.globalCompositeOperation = 'source-over';
+}
+
+/* Background: faint star-dust drifting through the dark, full screen. */
+const dcv = document.getElementById('dust'), dg = dcv.getContext('2d');
+const dust = Array.from({ length: 70 }, () => ({
+  x: Math.random(), y: Math.random(), r: 0.3 + Math.random() * 1.1,
+  vx: (Math.random() - 0.5) * 0.004, vy: -0.002 - Math.random() * 0.004,
+  tw: Math.random() * 6.28, c: ['#2EE6D6', '#4A7BFF', '#9D5CFF'][Math.floor(Math.random() * 3)]
+}));
+function sizeDust() {
+  const d = Math.min(window.devicePixelRatio || 1, 2);
+  dcv.width = Math.round(innerWidth * d); dcv.height = Math.round(innerHeight * d);
+  dg.setTransform(d, 0, 0, d, 0, 0);
+}
+addEventListener('resize', sizeDust); sizeDust();
+function drawDust(now, dt) {
+  dg.clearRect(0, 0, innerWidth, innerHeight);
+  for (const m of dust) {
+    m.x = (m.x + m.vx * dt + 1) % 1; m.y = (m.y + m.vy * dt + 1) % 1;
+    const a = 0.12 + 0.18 * (0.5 + 0.5 * Math.sin(now * 0.6 + m.tw));
+    dg.fillStyle = hexA(m.c, a);
+    dg.beginPath(); dg.arc(m.x * innerWidth, m.y * innerHeight, m.r, 0, Math.PI * 2); dg.fill();
+  }
 }
 
 function hexA(hex, a) {
@@ -416,14 +516,15 @@ function frame(ms) {
   const now = ms / 1000;
   if (playing && Engine.ctx) {
     const ph = Engine.cadencePhase();
-    const c = 0.5 + 0.5 * Math.cos(2 * Math.PI * ph); pulse = c * c;
-    if (lastPhase > 0.75 && ph < 0.25) buzz(30);          // heavy thud at each peak
+    pulse = 0.5 + 0.5 * Math.cos(2 * Math.PI * ph);
+    if (lastPhase > 0.75 && ph < 0.25) buzz(30);          // heavy thud at each sub-wave crest
     lastPhase = ph;
-    swell = Engine.swell();
+    const w = Engine.waves(); waveA = w[0]; swell = 0.5 * (w[1] + w[2]);
   } else {
-    pulse = Math.max(0, pulse - 0.04); swell = Math.max(0, swell - 0.02);
+    pulse = Math.max(0, pulse - 0.02); swell = Math.max(0, swell - 0.02); waveA = Math.max(0, waveA - 0.02);
   }
   draw(now);
+  if (!reduceMotion) drawDust(now, 1 / 60);
   updateReadouts();
   requestAnimationFrame(frame);
 }
@@ -437,14 +538,14 @@ let lastText = '';
 function updateReadouts() {
   const t = targets();
   const cut = t.cutoff < 1000 ? `${t.cutoff.toFixed(0)} Hz` : `${(t.cutoff / 1000).toFixed(2)} kHz`;
-  const sw = playing ? (swell >= 0.5 ? 'BROWN ▲' : 'PINK ▼') : '—';
-  const text = [t.alpha.toFixed(1), t.gamma.toFixed(1), cut, sw, t.cadence.toFixed(2), playing].join('|');
+  const perMin = t.cadence * 60;
+  const text = [t.alpha.toFixed(1), t.gamma.toFixed(1), cut, perMin.toFixed(1), playing].join('|');
   if (text === lastText) return; lastText = text;
   $('v-outer').textContent = `${t.alpha.toFixed(1)} Hz`;
   $('v-middle').textContent = `${t.gamma.toFixed(1)} Hz`;
-  $('c-middle').textContent = `DRIVE · γ   LPF ${cut}   SWELL ${sw}`;
-  $('v-core').textContent = `${t.cadence.toFixed(2)} Hz`;
-  $('c-core').textContent = `CADENCE RATE · ${(t.cadence * 60).toFixed(0)} BPM`;
+  $('c-middle').textContent = `DRIVE · γ   BROWN + PINK WAVES   LPF ${cut}`;
+  $('v-core').textContent = `${perMin.toFixed(1)} /min`;
+  $('c-core').textContent = `SUB WAVE · ONE EVERY ${(60 / perMin).toFixed(1)} s`;
   $('state').textContent = playing ? 'ACTIVE' : 'TAP CORE TO BEGIN';
   $('dot').classList.toggle('on', playing);
 }
@@ -512,12 +613,12 @@ function rotate(idx, delta, angle, dt) {
 function emit(r, angle, w) {
   const speed = Math.abs(w); if (speed < 0.05) return;
   const dir = w >= 0 ? 1 : -1, count = Math.min(5, 1 + Math.floor(speed / 3)), now = performance.now() / 1000;
-  const lo = r.key === 'core' ? Math.max(r.band[0], 0.12) : r.band[0];
+  const mid = (r.band[0] + r.band[1]) / 2, lo = mid - 0.04;
   for (let i = 0; i < count; i++) {
     particles.push({
-      color: r.color, angle: angle - dir * i * 0.035 + (Math.random() - 0.5) * 0.04,
-      r: lo + Math.random() * (r.band[1] - lo), drift: -dir * Math.min(speed, 12) * 0.12,
-      born: now, life: 0.65 + Math.random() * 0.6, size: 0.9 + Math.random() * 1.5
+      color: r.color, color2: r.color2, angle: angle - dir * i * 0.035 + (Math.random() - 0.5) * 0.04,
+      r: lo + Math.random() * 0.08, drift: -dir * Math.min(speed, 12) * 0.12,
+      born: now, life: 1.2 + Math.random() * 1.0, size: 1.0 + Math.random() * 1.8
     });
   }
   if (particles.length > 700) particles.splice(0, particles.length - 700);
