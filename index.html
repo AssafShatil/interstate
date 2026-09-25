@@ -87,7 +87,7 @@
     <canvas id="dial" tabindex="0" aria-label="Three concentric knobs. Tap the centre to start or stop. Press a ring and turn it. Arrow keys and Page Up or Down also turn them."></canvas>
   </div>
 
-  <p class="hint" id="hint">Headphones on. Tap the centre to begin.</p>
+  <p class="hint" id="hint">Headphones on. Tap the centre to begin. · v13</p>
 </div>
 
 <script>
@@ -373,7 +373,7 @@ const RINGS = [
   { key: 'inner',  name: 'CLUSTER', color: '#9D5CFF', color2: '#D07CFF', idle:  1, band: [0.38, 0.54], hit: [0.35, 0.57], value: 0.50 },
   { key: 'core',   name: 'HEART',   color: '#D07CFF', color2: '#2EE6D6', idle: -1, band: [0.16, 0.32], hit: [0.00, 0.35], value: 0.50 }
 ];
-RINGS.forEach((r, i) => { r.dir = i % 2 ? -1 : 1; r.spin = 0; r.awake = false; r.phase = -Math.PI / 2 + r.value * Math.PI * 2; r.moved = 0; r.rotation = 0; r.active = 0; r.grip = null; r.press = 0; r.teeth = i === 2 ? 36 : 60; });
+RINGS.forEach((r, i) => { r.dir = i % 2 ? -1 : 1; r.limit = 0; r.limitSide = 0; r.moved = 0; r.rotation = 0; r.active = 0; r.grip = null; r.press = 0; r.teeth = i === 2 ? 36 : 60; });
 
 const map = {
   beat: v => 0.5 + 3.5 * v,            // ring 01: drone binaural beat 0.5–4 Hz (delta → theta)
@@ -445,7 +445,7 @@ const valueText = [
 ];
 function arcLabel(r, idx, orbit, head) {
   // Horizontal, centred above the ring's circle (12 o'clock), like the legend on a knob.
-  const txt = valueText[idx](targets());
+  const txt = valueText[idx](targets()) + (r.limit > 0.05 ? (r.limitSide > 0 ? '  ·  MAX' : '  ·  MIN') : '');
   // Hidden at rest: appears only while a finger is on this ring (and fades after).
   // On first load all four show for a few seconds so people learn what the rings are.
   const intro = Math.max(0, Math.min(1, 5 - performance.now() / 1000)) * 0.6;
@@ -470,10 +470,10 @@ function draw(now) {
 
   // HALO TRAILS: fade the previous frame instead of clearing it, so every moving
   // line leaves a luminous afterimage. Slower fade while a ring is being turned.
-  const turning = RINGS.some(r => r.active > 0);
-  g.globalCompositeOperation = 'destination-out';
-  g.fillStyle = `rgba(0,0,0,${turning ? 0.06 : 0.12})`;
-  g.fillRect(-side, -side, side * 2, side * 2);
+  // Clear fully every frame. (The old fade-trail left faint ghost pixels behind —
+  // that is why titles looked permanently present.) The streak's own tail is the trail.
+  g.globalCompositeOperation = 'source-over';
+  g.clearRect(-side, -side, side * 2, side * 2);
   // Rings draw normally (they settle at their own brightness when still);
   // only the motes add light.
   g.globalCompositeOperation = 'source-over';
@@ -482,19 +482,13 @@ function draw(now) {
   RINGS.forEach((r, idx) => {
     const act = r.active > 0;
     r.press += ((act ? 1 : 0) - r.press) * 0.25;
-    // Each ring is one streak of light — a chakra wheel. It is still until you
-    // wake it (turn that ring, or start the session). From then on it keeps
-    // spinning; the ring's setting sets its speed, the direction of your last
-    // turn sets its direction, and turning pushes it live under your finger.
-    // Stopping the session lets the wheels glide to rest.
+    // Each ring is one streak of light. It never moves on its own: it travels only
+    // while your finger turns the ring, and its head always sits at the ring's
+    // setting (12 o'clock = minimum, clockwise = more). The tail trails behind
+    // the direction you last turned.
     r.moved = Math.max(0, r.moved - dt * 1.5);             // 1 → 0 after a turn
-    const t = targets();
-    const speed = idx === 3 ? (2 * Math.PI * t.bpm / 60) / 4 // heart: one turn every 4 beats
-                            : 0.3 + 1.5 * r.value;          // 0.3 … 1.8 rad/s
-    const target = (playing || (r.awake && !stoppedAt)) ? speed * r.dir : 0;
-    r.spin += (target - r.spin) * Math.min(1, dt * (target ? 2.5 : 0.6));
-    r.phase += r.spin * dt;
-    const head = r.phase;
+    r.limit = Math.max(0, r.limit - dt * 1.2);             // end-stop flash
+    const head = -Math.PI / 2 + r.value * Math.PI * 2;
     const orbit = ((r.band[0] + r.band[1]) / 2) * R;
     // Brightness breathes with the ring's own sound; the whole wheel dims at rest.
     let energy = act ? 1 : (playing ? 0.6 : 0.45);
@@ -508,15 +502,15 @@ function draw(now) {
 
     // Faint orbit: where to put your finger.
     g.globalCompositeOperation = 'source-over';
-    g.shadowBlur = 0; g.lineWidth = 0.6; g.strokeStyle = hexA(r.color, (0.05 + 0.08 * r.press) * restDim);
+    g.shadowBlur = 0; g.lineWidth = 0.6; g.strokeStyle = hexA(r.color, (0.10 + 0.12 * r.press) * restDim);
     g.beginPath(); g.arc(0, 0, orbit, 0, Math.PI * 2); g.stroke();
 
     // Core: a breathing violet orb under its streak.
     if (idx === 3) {
       const rr = R * (0.30 + 0.05 * pulse);
       const gr = g.createRadialGradient(0, 0, 0, 0, 0, rr);
-      gr.addColorStop(0.0, hexA('#C9A8FF', 0.10 + 0.14 * pulse));
-      gr.addColorStop(0.35, hexA('#9D5CFF', 0.06 + 0.08 * pulse));
+      gr.addColorStop(0.0, hexA('#C9A8FF', 0.22 + 0.25 * pulse));
+      gr.addColorStop(0.35, hexA('#9D5CFF', 0.14 + 0.14 * pulse));
       gr.addColorStop(0.75, hexA('#4A7BFF', 0.025));
       gr.addColorStop(1.0, 'rgba(0,0,0,0)');
       g.fillStyle = gr; g.beginPath(); g.arc(0, 0, rr, 0, Math.PI * 2); g.fill();
@@ -534,22 +528,23 @@ function draw(now) {
       const col = t0 < 0.4 ? r.color : r.color2;
       // wide soft halo
       g.shadowBlur = 0; g.lineWidth = 10 * fade + 2;
-      g.strokeStyle = hexA(col, 0.035 * fade * energy);
+      g.strokeStyle = hexA(col, 0.10 * fade * energy);
       g.beginPath(); g.arc(0, 0, orbit, Math.min(a0, a1), Math.max(a0, a1)); g.stroke();
       // bright filament
       g.shadowColor = col; g.shadowBlur = 10 * fade;
       g.lineWidth = 0.6 + 2.4 * fade;
-      g.strokeStyle = hexA(col, 0.55 * fade * energy);
+      g.strokeStyle = hexA(col, Math.min(1, 1.0 * fade * energy));
       g.beginPath(); g.arc(0, 0, orbit, Math.min(a0, a1), Math.max(a0, a1)); g.stroke();
     }
     // Head: a hot white-tinted point.
     const hx = orbit * Math.cos(head), hy = orbit * Math.sin(head);
-    const hg = g.createRadialGradient(hx, hy, 0, hx, hy, 14 + 6 * r.press);
-    hg.addColorStop(0, hexA('#FFFFFF', 0.55 * energy));
-    hg.addColorStop(0.25, hexA(r.color, 0.45 * energy));
+    const hr = 14 + 6 * r.press + 10 * r.limit;             // head flares at an end-stop
+    const hg = g.createRadialGradient(hx, hy, 0, hx, hy, hr);
+    hg.addColorStop(0, hexA('#FFFFFF', Math.min(1, 0.9 * energy)));
+    hg.addColorStop(0.25, hexA(r.color, Math.min(1, 0.7 * energy)));
     hg.addColorStop(1, 'rgba(0,0,0,0)');
     g.shadowBlur = 0; g.fillStyle = hg;
-    g.beginPath(); g.arc(hx, hy, 14 + 6 * r.press, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(hx, hy, hr, 0, Math.PI * 2); g.fill();
 
     g.globalCompositeOperation = 'source-over';
     arcLabel(r, idx, orbit, head);
@@ -611,7 +606,20 @@ function hexA(hex, a) {
 /* =========================================================================
    FRAME LOOP: breathing core + thud are phase-locked to the audio clock
    ========================================================================= */
+const BUILD = 'v13';
+let shownErr = false;
+function report(msg) {
+  if (shownErr) return; shownErr = true;
+  const h = document.getElementById('hint');
+  if (h) h.textContent = `${BUILD} · error: ${String(msg).slice(0, 90)}`;
+}
+window.addEventListener('error', e => report(e.message));
+window.addEventListener('unhandledrejection', e => report(e.reason && e.reason.message || e.reason));
 function frame(ms) {
+  try { frameBody(ms); } catch (err) { report(err.message); }
+  requestAnimationFrame(frame);
+}
+function frameBody(ms) {
   const now = ms / 1000;
   if (playing && Engine.ctx) {
     const ph = Engine.cadencePhase();
@@ -625,8 +633,7 @@ function frame(ms) {
   draw(now);
   if (!reduceMotion) drawDust(now, 1 / 60);
   updateReadouts();
-  requestAnimationFrame(frame);
-}
+  }
 requestAnimationFrame(frame);
 
 /* =========================================================================
@@ -657,7 +664,8 @@ cv.addEventListener('pointerdown', e => {
   buzz(4);
 });
 
-cv.addEventListener('pointermove', e => {
+cv.addEventListener('pointermove', e => { try { onMove(e); } catch (err) { report(err.message); } });
+function onMove(e) {
   const p = pointers.get(e.pointerId); if (!p) return;
   const { angle, dist } = polar(e);
   p.moved = Math.max(p.moved, Math.hypot(e.clientX - p.x, e.clientY - p.y));
@@ -668,7 +676,7 @@ cv.addEventListener('pointermove', e => {
   p.last = angle;
   const nowMs = performance.now(), dt = Math.max(1 / 240, (nowMs - p.t) / 1000); p.t = nowMs;
   rotate(p.idx, d, angle, dt);
-});
+}
 
 function end(e) {
   const p = pointers.get(e.pointerId); if (!p) return;
@@ -684,10 +692,13 @@ function rotate(idx, delta, angle, dt) {
   const r = RINGS[idx], old = r.value;
   r.value = Math.min(1, Math.max(0, old + delta / (2 * Math.PI)));   // one turn = full range
   const eff = (r.value - old) * 2 * Math.PI;
-  if (!eff) return;                                                   // pinned at an end-stop
+  if (!eff) {                                                         // pinned at an end-stop:
+    if (!r.limit || r.limit < 0.6) buzz(15);                          // say so, don't just freeze
+    r.limit = 1; r.limitSide = r.value >= 1 ? 1 : -1; r.moved = 1; lastInteract = performance.now() / 1000;
+    return;
+  }
   r.rotation += eff;
-  r.dir = eff > 0 ? 1 : -1; r.moved = 1; r.awake = true; stoppedAt = 0;
-  r.phase += eff;                                      // the streak follows the finger
+  r.dir = eff > 0 ? 1 : -1; r.moved = 1;
   lastInteract = performance.now() / 1000;
   showHud(idx);
   const w = eff / dt;
