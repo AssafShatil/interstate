@@ -49,7 +49,40 @@
   canvas { display: block; touch-action: none; max-width: 100%; transform: translateY(-38px); }   /* ≈ 1 cm up */
   canvas:focus-visible { outline: 1px solid var(--label); outline-offset: 4px; border-radius: 50%; }
 
-  .wordmark, .hint, .hud { transition: opacity 1.2s ease; }
+  .wordmark, .hint, .hud, .sess, .end { transition: opacity 1.2s ease; }
+  body.rest .sess, body.rest .end { opacity: 0; }
+  .sess { margin: 6px 0 0; min-height: 14px; font-size: 10px; letter-spacing: 0.22em; padding-left: 0.22em; font-variant-numeric: tabular-nums; }
+  .end { margin-top: 10px; background: none; border: 0; color: var(--label); opacity: 0.7; font: 400 10px var(--mono);
+         letter-spacing: 0.18em; text-transform: uppercase; padding: 8px 14px; cursor: pointer; }
+  .end:focus-visible, .intent:focus-visible, .len:focus-visible, .begin:focus-visible { outline: 1px solid var(--label); outline-offset: 3px; }
+  /* HOME — choose an intent and a length */
+  .home { position: fixed; inset: 0; z-index: 5; box-sizing: border-box; overflow-y: auto;
+          display: flex; flex-direction: column; align-items: center; gap: 22px;
+          padding-inline: 24px; padding-block: 52px 28px;
+          background: radial-gradient(120% 70% at 50% 42%, #0B0920 0%, #05040E 45%, #000 80%) #000;
+          transition: opacity 0.9s ease; }
+  .home.hidden { opacity: 0; pointer-events: none; }
+  .intents { width: 100%; max-width: 360px; display: grid; gap: 4px; margin-top: 8vh; }
+  .intent { display: grid; grid-template-columns: 1fr; text-align: left; gap: 3px; cursor: pointer;
+            background: none; border: 0; border-left: 1px solid transparent; color: var(--label);
+            padding: 12px 14px; font-family: var(--mono); transition: border-color .3s, color .3s, background .3s; }
+  .intent .in-name { font-size: 15px; letter-spacing: 0.24em; text-transform: uppercase; }
+  .intent .in-line { font-size: 10px; letter-spacing: 0.08em; opacity: 0.7; }
+  .intent[aria-checked="true"] { color: var(--c); border-left-color: var(--c);
+            background: linear-gradient(90deg, color-mix(in srgb, var(--c) 10%, transparent), transparent 70%); }
+  .intent[aria-checked="true"] .in-name { text-shadow: 0 0 12px color-mix(in srgb, var(--c) 55%, transparent); }
+  .lengths { display: flex; align-items: baseline; gap: 6px; }
+  .len { background: none; border: 1px solid transparent; border-radius: 999px; color: var(--label); cursor: pointer;
+         font: 500 13px var(--mono); padding: 6px 12px; font-variant-numeric: tabular-nums; }
+  .len[aria-checked="true"] { border-color: color-mix(in srgb, var(--label) 60%, transparent); color: #D8DAF0; }
+  .len-unit { font-size: 10px; letter-spacing: 0.14em; margin-left: 2px; }
+  .begin { margin-top: 6px; background: none; color: #E9E6FF; cursor: pointer; font: 500 12px var(--mono);
+           letter-spacing: 0.4em; padding: 14px 34px 14px calc(34px + 0.4em); text-transform: uppercase;
+           border: 1px solid color-mix(in srgb, #9D5CFF 55%, transparent); border-radius: 999px;
+           box-shadow: 0 0 22px color-mix(in srgb, #9D5CFF 22%, transparent), inset 0 0 14px color-mix(in srgb, #4A7BFF 12%, transparent); }
+  .weekly { margin: 4px 0 0; opacity: 0.7;  }
+  .weekly, .home-hint { margin: 0; font-size: 10px; letter-spacing: 0.14em; text-align: center; min-height: 14px; }
+  .home-hint { margin-top: auto; opacity: 0.6; }
   body.rest .wordmark, body.rest .hint { opacity: 0; }
   .hud { height: 44px; display: grid; justify-items: center; align-content: center; gap: 4px; opacity: 0; }
   .hud.show { opacity: 1; transition: opacity 0.15s ease; }
@@ -80,14 +113,18 @@
 </style>
 </head><body>
 <canvas id="dust" aria-hidden="true"></canvas>
+
 <div class="app">
   <h1 class="wordmark">INTERSTATE</h1>
+  <p class="sess" id="sess">&nbsp;</p>
 
   <div class="stage" id="stage">
     <canvas id="dial" tabindex="0" aria-label="Three concentric knobs. Tap the centre to start or stop. Press a ring and turn it. Arrow keys and Page Up or Down also turn them."></canvas>
   </div>
 
-  <p class="hint" id="hint">Headphones on. Tap the centre to begin. · v16</p>
+  <p class="hint" id="hint">Headphones on · v19</p>
+  <p class="weekly" id="weekly">&nbsp;</p>
+  <button class="end" id="end" hidden>End session</button>
 </div>
 
 <script>
@@ -97,8 +134,13 @@
    AudioWorklet via Function.prototype.toString().
    ========================================================================= */
 class InterstateKernel {
-  // Port of prototypes/interstate_palette_v4.scd — the four approved layers:
-  //   DRONE      \wellnessDrone: L 55 Hz, R 55 + beat (binaural), 2nd partial, 0.045 Hz breath
+  // v17 — adds material from Male Wellness / State A "Layered Sub":
+  //   DRONE      locked binaural pairs: carrier 128 / 128+beat, sub 64 / 64+beat/2 (always 2:1)
+  //   AIR        five textures (deep · body · mid beds, bright + singing-vowel gusts), each with
+  //              presence gates and moving pan, plus the Dream Timbre swells and a DRY close breath
+  //   WARMTH     even-harmonic saturation (positive half squared) + LeakDC + 7 kHz ceiling
+  //   CLUSTER    presence gates: voices drift out and back (floor 15 %)
+  // Earlier layers:
   //   HEARTBEAT  \ist_heart (Dream Timbre Mvt V): 55 Hz lub, SinOsc-shaped .pow(4), soft drive
   //   CLUSTER    \ist_cluster: the box ×2, one voice per pitch, 3 drifting oscs each, own swells
   //   AIR        \ist_air (Dream Timbre \dtAirSwell): stochastic dark noise swells
@@ -106,7 +148,9 @@ class InterstateKernel {
   constructor(sr) {
     this.sr = sr;
     this.rng = 0x9E3779B9 >>> 0;
-    this.t = { beat: 1.2, air: 0.5, cluster: 0.5, bpm: 45, master: 0, focus: -1 };
+    this.t = { beat: 1.2, air: 0.5, cluster: 0.5, bpm: 45, master: 0, focus: -1, form: 0.5, carrier: 128, tune: 1 };
+    this.carrier = 128; this.tune = 1;
+    this.form = 0.5;
     this.lg = [1, 1, 1, 1];            // per-layer focus gains: drone, air, cluster, heart
     this.kickReq = false;
     this.beat = 1.2; this.air = 0.5; this.cluster = 0.5; this.bpm = 45; this.master = 0;
@@ -134,8 +178,28 @@ class InterstateKernel {
     this.bed = [0, 0, 0, 0]; this.bedPkL = new Float64Array(7); this.bedPkR = new Float64Array(7);
     this.dH2 = 0.12; this.dH3 = 0; this.dLev = 1; this.bedA = 0.05; this.bedLev = 0.05; this.dub = 0; this.hLev = 1; this.hH2 = 0.7; this.hH3 = 0.35;
     this.clLpL = 0; this.clLpR = 0; this.clA = 1 - Math.exp(-2 * Math.PI * 2200 / sr);
-    // air swells
+    // air swells (Dream Timbre)
     this.swells = []; this.nextSwell = 1.5; this.airEnv = 0;
+    // DRONE locked pairs
+    this.cL = 0; this.cR = 0; this.sL = 0; this.sR = 0;
+    // AIR beds: deep (brown→LPF), body (brown→BPF), mid (pink→BPF); each with gate, filter motion, pan motion
+    const bed = (lo, hi, rqLo, rqHi, panW, gateRate, gateLo) => ({
+      br: 0, pk: new Float64Array(7), f: this.lfn(0.01 + this.rand() * 0.02, lo, hi),
+      rq: this.lfn(0.02 + this.rand() * 0.02, rqLo, rqHi), bq: this.bqNew(), bq2: this.bqNew(),
+      panSlow: this.lfn(0.006 + this.rand() * 0.01, -panW, panW), panFast: this.lfn(0.07 + this.rand() * 0.05, -0.15, 0.15),
+      gate: this.lfn(gateRate, gateLo, 1.3), amp: this.lfn(0.02 + this.rand() * 0.02, 0.6, 1), gl: 0, gr: 0 });
+    this.beds = [bed(80, 400, 0, 0, 0.6, 0.0031, -0.5),     // deep  (LPF)
+                 bed(100, 500, 0.25, 0.6, 0.6, 0.0043, -0.8), // body  (BPF)
+                 bed(250, 1000, 0.2, 0.5, 0.8, 0.0050, -0.8)]; // mid   (BPF)
+    // AIR gusts: bright (HPF) and singing (vowel formants)
+    this.gusts = []; this.nextBright = 4; this.nextSing = 8;
+    // breath (dry, close)
+    this.breathV = { ph: 3, len: 1, stage: 3, pk: new Float64Array(7), bq: this.bqNew(), pan: 0, bright: 1, t: 0, inT: 3, turn: 0.8, outT: 6, rest: 2 };
+    // cluster presence gates
+    for (const v of this.voices) v.gate = this.lfn(0.004 + this.rand() * 0.004, -0.5, 1.4);
+    // warmth / master chain states
+    this.wm = { dcxL: 0, dcyL: 0, dcxR: 0, dcyR: 0, lpL: 0, lpR: 0 };
+    this.ceilA = 1 - Math.exp(-2 * Math.PI * 7000 / sr);
     this.env = new Float64Array(4);   // telemetry: drone breath, air, heart, cluster
   }
   rand() {
@@ -148,6 +212,33 @@ class InterstateKernel {
     o.t += o.rate * dtBlock;
     while (o.t >= 1) { o.t -= 1; o.a = o.b; o.b = o.lo + (o.hi - o.lo) * this.rand(); }
     o.v = o.a + (o.b - o.a) * o.t; return o.v;
+  }
+  bqNew() { return { b0: 0, b1: 0, b2: 0, a1: 0, a2: 0, z1: 0, z2: 0 }; }
+  bqSet(q, type, f, Q) {                 // RBJ biquad: 'lp' | 'hp' | 'bp' (constant 0 dB peak)
+    const w0 = 2 * Math.PI * Math.min(Math.max(f, 20), this.sr * 0.45) / this.sr;
+    const c = Math.cos(w0), al = Math.sin(w0) / (2 * Q), a0 = 1 + al;
+    if (type === 'lp') { q.b0 = (1 - c) / 2 / a0; q.b1 = (1 - c) / a0; q.b2 = q.b0; }
+    else if (type === 'hp') { q.b0 = (1 + c) / 2 / a0; q.b1 = -(1 + c) / a0; q.b2 = q.b0; }
+    else { q.b0 = al / a0; q.b1 = 0; q.b2 = -al / a0; }
+    q.a1 = -2 * c / a0; q.a2 = (1 - al) / a0;
+  }
+  bq(q, x) { const y = q.b0 * x + q.z1; q.z1 = q.b1 * x - q.a1 * y + q.z2; q.z2 = q.b2 * x - q.a2 * y; return y; }
+  pinkNext(p, w) {
+    p[0] = 0.99886 * p[0] + w * 0.0555179; p[1] = 0.99332 * p[1] + w * 0.0750759; p[2] = 0.969 * p[2] + w * 0.153852;
+    p[3] = 0.8665 * p[3] + w * 0.3104856; p[4] = 0.55 * p[4] + w * 0.5329522; p[5] = -0.7616 * p[5] - w * 0.016898;
+    const o = (p[0] + p[1] + p[2] + p[3] + p[4] + p[5] + p[6] + w * 0.5362) * 0.11; p[6] = w * 0.115926; return o;
+  }
+  gateShape(x) { const g = Math.min(1, Math.max(0, x)); return g * g * (3 - 2 * g); }   // smooth, reaches true 0
+  spawnGust(kind) {
+    const vowels = [[300, 870], [400, 800], [500, 1000], [700, 1220]];     // oo oh uh ah
+    const bright = kind === 0, d0 = Math.pow(this.rand(), 2), d1 = Math.pow(this.rand(), 2);   // mostly far
+    const g = { kind, t: 0, dur: bright ? 3 + this.rand() * 11 : 8 + this.rand() * 26,
+      p0: this.rand() * 1.8 - 0.9, p1: this.rand() * 1.8 - 0.9, d0, d1, pk: new Float64Array(7),
+      f: bright ? 900 + this.rand() * 3100 : 0, v: vowels[Math.floor(this.rand() * 4)],
+      rq: 0.03 + this.rand() * 0.09, b1: this.bqNew(), b2: this.bqNew(), lp: 0, gl: 0, gr: 0, env: 0 };
+    if (bright) this.bqSet(g.b1, 'hp', g.f, 0.7);
+    else { this.bqSet(g.b1, 'bp', g.v[0], 1 / g.rq); this.bqSet(g.b2, 'bp', g.v[1], 1 / g.rq); }
+    this.gusts.push(g);
   }
   setTargets(o) { if (o.kick) { this.kickReq = true; return; } Object.assign(this.t, o); }
   spawnSwell(fast) {
@@ -171,19 +262,62 @@ class InterstateKernel {
     this.air += (t.air - this.air) * k(0.5);
     this.cluster += (t.cluster - this.cluster) * k(0.8);
     this.bpm += (t.bpm - this.bpm) * k(3);
+    this.carrier += (t.carrier - this.carrier) * k(2); this.tune += (t.tune - this.tune) * k(2);   // retuning glides
     // Each ring is a macro: several parameters move together and glide, so any turn is audible.
-    const vD = (this.beat - 0.5) / 3.5, vA = this.air, vC = this.cluster, vH = (this.bpm - 30) / 30;
+    // Session arc (form 0…1, 0.5 = neutral): opens the air and the cluster toward the peak
+    this.form += (t.form - this.form) * k(4);
+    const cl01 = x => Math.min(1, Math.max(0, x));
+    const vD = (this.beat - 1) / 7.5, vH = (this.bpm - 30) / 30;
+    const vA = cl01(this.air * (0.55 + 0.9 * this.form) + 0.12 * (this.form - 0.5));
+    const vC = cl01(this.cluster * (0.7 + 0.6 * this.form));
     // DRONE: beat speed + brighter partials + more body
     this.dH2 = 0.10 + 0.40 * vD; this.dH3 = 0.30 * vD * vD; this.dLev = 0.75 + 0.65 * vD;
-    // AIR: a continuous breath bed that opens and grows immediately (plus the swells)
-    this.bedCut = 350 * Math.pow(9, vA); this.bedLev = 0.015 + 0.11 * Math.pow(vA, 1.2);
-    this.bedA = 1 - Math.exp(-TP * this.bedCut * inv);
+    // AIR: the ring travels through the five textures — dark/close (deep, body) at the
+    // bottom, open/bright (mid beds, bright + singing gusts) at the top.
+    const bedW = [1.15 - 0.75 * vA, 0.55 + 0.45 * Math.sin(Math.PI * Math.min(1, vA * 1.2)), 0.15 + 1.0 * vA];
+    for (let j = 0; j < 3; j++) {
+      const q = this.beds[j];
+      const f = this.stepLfn(q.f, dtB) * (0.8 + 0.5 * vA), rq = this.stepLfn(q.rq, dtB);
+      if (j === 0) this.bqSet(q.bq, 'lp', f, 0.7); else { this.bqSet(q.bq, 'bp', f, 1 / rq); this.bqSet(q.bq2, 'lp', 7000, 0.7); }
+      const gate = Math.max(0.12, this.gateShape(this.stepLfn(q.gate, dtB)));   // beds thin, never vanish entirely
+      const lev = bedW[j] * gate * this.stepLfn(q.amp, dtB) * [0.9, 2.6, 2.4][j];
+      const pn = (Math.max(-1, Math.min(1, this.stepLfn(q.panSlow, dtB) + this.stepLfn(q.panFast, dtB))) + 1) * 0.25 * Math.PI;
+      q.gl = Math.cos(pn) * lev; q.gr = Math.sin(pn) * lev;
+    }
+    // gusts: density follows the ring (bright from ~20 %, singing from ~35 %)
+    this.nextBright -= dtB; this.nextSing -= dtB;
+    const bRate = Math.max(0, vA - 0.2) * 0.2, sRate = Math.max(0, vA - 0.35) * 0.12;   // gusts per second
+    if (this.nextBright <= 0) { if (bRate > 0 && this.gusts.length < 6) this.spawnGust(0); this.nextBright = bRate > 0 ? (0.4 + 1.2 * this.rand()) / bRate : 2; }
+    if (this.nextSing <= 0)   { if (sRate > 0 && this.gusts.length < 6) this.spawnGust(1); this.nextSing = sRate > 0 ? (0.4 + 1.2 * this.rand()) / sRate : 3; }
+    let gustSum = 0;
+    for (let j = this.gusts.length - 1; j >= 0; j--) {
+      const g = this.gusts[j]; g.t += dtB;
+      if (g.t >= g.dur) { this.gusts.splice(j, 1); continue; }
+      const x = g.t / g.dur; g.env = Math.sin(Math.PI * x);                 // Env.sine
+      const depth = g.d0 + (g.d1 - g.d0) * x, pan = g.p0 + (g.p1 - g.p0) * x;   // approaches / withdraws while sweeping
+      g.lp = 1 - Math.exp(-TP * Math.min(7000, 2100 + depth * 10600) * inv);    // closer = brighter
+      const lev = g.env * (0.25 + 0.75 * depth) * (g.kind === 0 ? 0.6 * 2.2 : 1.6 * 3.2);
+      const pn = (pan + 1) * 0.25 * Math.PI; g.gl = Math.cos(pn) * lev; g.gr = Math.sin(pn) * lev;
+      gustSum += g.env * (0.4 + 0.6 * depth);
+    }
+    // breath: dry and close — 3–4.5 s in (brighter), 0.8 s turn, 5–8 s out, 1–3 s rest
+    const B2 = this.breathV; B2.t += dtB;
+    const bTotal = B2.inT + B2.turn + B2.outT + B2.rest;
+    if (B2.t >= bTotal) { B2.t = 0; B2.inT = 3 + 1.5 * this.rand(); B2.turn = 0.8; B2.outT = 5 + 3 * this.rand(); B2.rest = 1 + 2 * this.rand(); B2.pan = this.rand() * 0.7 - 0.35; }
+    let bEnv, bBright;
+    if (B2.t < B2.inT) { const x = B2.t / B2.inT; bEnv = 0.5 - 0.5 * Math.cos(Math.PI * x); bBright = 1.35; }
+    else if (B2.t < B2.inT + B2.turn) { bEnv = 1; bBright = 1.1; }
+    else if (B2.t < B2.inT + B2.turn + B2.outT) { const x = (B2.t - B2.inT - B2.turn) / B2.outT; bEnv = 0.5 + 0.5 * Math.cos(Math.PI * x); bBright = 0.8; }
+    else { bEnv = 0; bBright = 0.8; }
+    this.bqSet(B2.bq, 'bp', 900 * bBright * (0.85 + 0.3 * vA), 1.1);
+    const bLev = bEnv * 0.10 * (0.4 + 0.6 * vA), bpn = (B2.pan + 1) * 0.25 * Math.PI;
+    B2.gl = Math.cos(bpn) * bLev; B2.gr = Math.sin(bpn) * bLev;
     // CLUSTER: voices enter one by one, consonant first, and the colour brightens
     const clGain = 0.7 + 0.6 * vC;
     this.clA = 1 - Math.exp(-TP * (800 * Math.pow(4.4, vC)) * inv);   // LPF 800 Hz → 3.5 kHz
     const sawAdd = 0.30 * vC;
     // HEART: tempo + a second "dub" beat fading in + more weight and edge
-    this.dub = Math.min(1, Math.max(0, (vH - 0.25) / 0.6)) * 0.55;
+    this.dub = Math.min(1, Math.max(0, (vH - 0.25) / 0.6)) * 0.55 * (0.6 + 0.8 * this.form);
     this.hLev = 0.75 + 0.5 * vH; this.hH2 = 0.5 + 0.4 * vH; this.hH3 = 0.2 + 0.35 * vH;
     const m0 = this.master; this.master += (t.master - this.master) * k(t.master > this.master ? 1.2 : 2.2); const m1 = this.master;
     this.breathPh = (this.breathPh + 0.045 * dtB) % 1;
@@ -195,9 +329,10 @@ class InterstateKernel {
       v.wave.ph = (v.wave.ph + v.wave.inc * dtB) % 1;
       const entry = Math.min(1, Math.max(0, vC * 7.2 - v.rank));        // this voice's turn to enter
       v.present = entry * entry * (3 - 2 * entry);                        // smooth fade-in
-      v.env = (0.1 + 0.9 * (0.5 - 0.5 * Math.cos(TP * v.wave.ph))) * v.present;
+      const gate = Math.max(0.15, this.gateShape(this.stepLfn(v.gate, dtB)));   // drifts out and back
+      v.env = (0.1 + 0.9 * (0.5 - 0.5 * Math.cos(TP * v.wave.ph))) * v.present * gate;
       for (const o of v.oscs) {
-        o.inc = v.f * (1 + this.stepLfn(o.det, dtB)) * inv;
+        o.inc = v.f * this.tune * (1 + this.stepLfn(o.det, dtB)) * inv;
         const a = this.stepLfn(o.amp, dtB) * v.env * 0.09 * 0.30 * clGain;
         const pn = (this.stepLfn(o.pan, dtB) + 1) * 0.25 * Math.PI;       // equal-power
         o.gl = Math.cos(pn) * a; o.gr = Math.sin(pn) * a; o.sw = this.stepLfn(o.saw, dtB) + sawAdd;
@@ -237,27 +372,26 @@ class InterstateKernel {
       w.sl = Math.cos(pn) * g * dist * 0.6;      w.sr = Math.sin(pn) * g * dist * 0.6;
       airSum += w.env;
     }
-    this.airEnv = Math.min(1, airSum);
+    this.airEnv = Math.min(1, airSum * 0.6 + gustSum * 0.8 + 0.3 * vA);
 
     // ---- audio rate ----
-    const beat = this.beat, br = this.breath, fD = 55;
+    const beat = this.beat, br = this.breath;
+    const cf = this.carrier, iC = TP * cf * inv, iCR = TP * (cf + beat) * inv, iS = TP * cf / 2 * inv, iSR = TP * (cf / 2 + beat / 2) * inv;
     for (let i = 0; i < n; i++) {
       const m = m0 + (m1 - m0) * (i / n);
-      // DRONE
-      const dl = Math.sin(this.dL) + this.dH2 * Math.sin(this.dL2) + this.dH3 * Math.sin(3 * this.dL);
-      const dr = Math.sin(this.dR) + this.dH2 * Math.sin(this.dR2) + this.dH3 * Math.sin(3 * this.dR);
-      this.dL += TP * fD * inv; this.dL2 += TP * fD * 2 * inv;
-      this.dR += TP * (fD + beat) * inv; this.dR2 += TP * (fD + beat) * 2 * inv;
-      if (this.dL > TP) this.dL -= TP; if (this.dL2 > TP) this.dL2 -= TP;
-      if (this.dR > TP) this.dR -= TP; if (this.dR2 > TP) this.dR2 -= TP;
-      const droneL = dl * 0.18 * br * this.dLev, droneR = dr * 0.18 * br * this.dLev;
+      // DRONE — two locked binaural pairs (carrier 128 / 128+beat, sub 64 / 64+beat/2)
+      const dl = Math.sin(this.cL) + this.dH2 * Math.sin(2 * this.cL) + this.dH3 * Math.sin(3 * this.cL) + 1.3 * Math.sin(this.sL);
+      const dr = Math.sin(this.cR) + this.dH2 * Math.sin(2 * this.cR) + this.dH3 * Math.sin(3 * this.cR) + 1.3 * Math.sin(this.sR);
+      this.cL += iC; this.cR += iCR; this.sL += iS; this.sR += iSR;
+      if (this.cL > TP) this.cL -= TP; if (this.cR > TP) this.cR -= TP; if (this.sL > TP) this.sL -= TP; if (this.sR > TP) this.sR -= TP;
+      const droneL = dl * 0.075 * br * this.dLev, droneR = dr * 0.075 * br * this.dLev;
       // HEARTBEAT
       const shape = Math.pow(0.5 + 0.5 * Math.sin(TP * this.hPh), 4)
                   + this.dub * Math.pow(0.5 + 0.5 * Math.sin(TP * (this.hPh - 0.2)), 8);   // lub … dub
       this.hPh += hInc; if (this.hPh >= 1) this.hPh -= 1;
       // 55 Hz body + 110 / 165 Hz so laptops and phones reproduce the beat
       let lub = Math.sin(this.lub) + this.hH2 * Math.sin(2 * this.lub) + this.hH3 * Math.sin(3 * this.lub);
-      this.lub += TP * 55 * inv; if (this.lub > TP) this.lub -= TP;
+      this.lub += TP * 55 * this.tune * inv; if (this.lub > TP) this.lub -= TP;
       lub = Math.tanh(lub * 0.9) * 0.55 * shape * this.hLev;
       // CLUSTER
       let cl = 0, cr = 0;
@@ -267,21 +401,26 @@ class InterstateKernel {
         cl += sgl * o.gl; cr += sgl * o.gr;
       }
       this.clLpL += (cl - this.clLpL) * this.clA; this.clLpR += (cr - this.clLpR) * this.clA;
-      // AIR bed: decorrelated pink noise, 2-pole low-pass that opens with the ring
+      // AIR — three beds
       let al = 0, ar = 0, sl = 0, sr = 0;
-      {
-        const wl = this.white(), wr = this.white(), bL = this.bedPkL, bR = this.bedPkR;
-        bL[0] = 0.99886 * bL[0] + wl * 0.0555179; bL[1] = 0.99332 * bL[1] + wl * 0.0750759; bL[2] = 0.969 * bL[2] + wl * 0.153852;
-        bL[3] = 0.8665 * bL[3] + wl * 0.3104856; bL[4] = 0.55 * bL[4] + wl * 0.5329522; bL[5] = -0.7616 * bL[5] - wl * 0.016898;
-        const pl = (bL[0] + bL[1] + bL[2] + bL[3] + bL[4] + bL[5] + bL[6] + wl * 0.5362) * 0.11; bL[6] = wl * 0.115926;
-        bR[0] = 0.99886 * bR[0] + wr * 0.0555179; bR[1] = 0.99332 * bR[1] + wr * 0.0750759; bR[2] = 0.969 * bR[2] + wr * 0.153852;
-        bR[3] = 0.8665 * bR[3] + wr * 0.3104856; bR[4] = 0.55 * bR[4] + wr * 0.5329522; bR[5] = -0.7616 * bR[5] - wr * 0.016898;
-        const pr = (bR[0] + bR[1] + bR[2] + bR[3] + bR[4] + bR[5] + bR[6] + wr * 0.5362) * 0.11; bR[6] = wr * 0.115926;
-        const b = this.bed, a = this.bedA;
-        b[0] += (pl - b[0]) * a; b[1] += (b[0] - b[1]) * a; b[2] += (pr - b[2]) * a; b[3] += (b[2] - b[3]) * a;
-        const lv = this.bedLev * br;                                        // breathes with the drone
-        al += b[1] * lv * 0.33; ar += b[3] * lv * 0.33; sl += b[1] * lv * 0.12; sr += b[3] * lv * 0.12;
+      for (let j = 0; j < 3; j++) {
+        const q = this.beds[j], w = this.white();
+        let x;
+        if (j < 2) { q.br = (q.br + 0.02 * w) / 1.02; x = q.br * 3.5; } else x = this.pinkNext(q.pk, w);
+        let y = this.bq(q.bq, x); if (j > 0) y = this.bq(q.bq2, y);
+        al += y * q.gl; ar += y * q.gr; sl += y * q.gl * 0.5; sr += y * q.gr * 0.5;
       }
+      // gusts: bright (HPF) and singing (two formants, F2 under F1)
+      for (const g of this.gusts) {
+        const pn = this.pinkNext(g.pk, this.white());
+        let y = g.kind === 0 ? this.bq(g.b1, pn) : this.bq(g.b1, pn) + 0.5 * this.bq(g.b2, pn);
+        g.lpz = (g.lpz || 0) + (y - (g.lpz || 0)) * g.lp; y = g.lpz;
+        al += y * g.gl; ar += y * g.gr; sl += y * g.gl * 0.6; sr += y * g.gr * 0.6;
+      }
+      // breath — dry (no reverb send): the one close thing
+      let bl = 0, bR = 0;
+      { const y = this.bq(this.breathV.bq, this.pinkNext(this.breathV.pk, this.white())) * 4; bl = y * this.breathV.gl; bR = y * this.breathV.gr; }
+      // Dream Timbre swells (a little quieter now that the air has five textures)
       for (const w of this.swells) {
         const wn = this.white();
         let x;
@@ -300,14 +439,21 @@ class InterstateKernel {
         w.lp1[0] += (x - w.lp1[0]) * w.a1; w.lp2[0] += (w.lp1[0] - w.lp2[0]) * w.a1;
         w.hp[0] += (w.lp2[0] - w.hp[0]) * w.ah;
         const y = (w.lp2[0] - w.hp[0]) * 2.2;
-        al += y * w.gl; ar += y * w.gr; sl += y * w.sl; sr += y * w.sr;
+        al += y * w.gl * 0.6; ar += y * w.gr * 0.6; sl += y * w.sl * 0.6; sr += y * w.sr * 0.6;
       }
       const g0 = this.lg[0] * 1.6, g1 = this.lg[1], g2 = this.lg[2], g3 = this.lg[3];
-      L[i] = Math.tanh((droneL * g0 + lub * g3 + this.clLpL * g2 * 5.5 + al * g1 * 3) * m);
-      R[i] = Math.tanh((droneR * g0 + lub * g3 + this.clLpR * g2 * 5.5 + ar * g1 * 3) * m);
+      let xl = (droneL * g0 + lub * g3 + this.clLpL * g2 * 5.5 + (al * 1.8 + bl * 4) * g1) * m;
+      let xr = (droneR * g0 + lub * g3 + this.clLpR * g2 * 5.5 + (ar * 1.8 + bR * 4) * g1) * m;
+      // WARMTH: square only the positive half (even harmonics), remove the DC it adds, 7 kHz ceiling
+      const W = this.wm;
+      xl += 0.45 * (xl > 0 ? xl * xl : 0); xr += 0.45 * (xr > 0 ? xr * xr : 0);
+      const yl = xl - W.dcxL + 0.9987 * W.dcyL; W.dcxL = xl; W.dcyL = yl;
+      const yr = xr - W.dcxR + 0.9987 * W.dcyR; W.dcxR = xr; W.dcyR = yr;
+      W.lpL += (yl - W.lpL) * this.ceilA; W.lpR += (yr - W.lpR) * this.ceilA;
+      L[i] = Math.tanh(W.lpL); R[i] = Math.tanh(W.lpR);
       // reverb send (dry-ish layers send less)
-      SL[i] = (droneL * 0.05 + lub * 0.08 + this.clLpL * 2.7 + sl * 3) * m;
-      SR[i] = (droneR * 0.05 + lub * 0.08 + this.clLpR * 2.7 + sr * 3) * m;
+      SL[i] = (droneL * 0.05 + lub * 0.08 + this.clLpL * 2.7 + sl * 1.8 * g1) * m;
+      SR[i] = (droneR * 0.05 + lub * 0.08 + this.clLpR * 2.7 + sr * 1.8 * g1) * m;
     }
     this.env[0] = (br - 0.45) / 0.55; this.env[1] = this.airEnv;
     this.env[2] = Math.min(1, Math.pow(0.5 + 0.5 * Math.sin(TP * this.hPh), 4) + this.dub * Math.pow(0.5 + 0.5 * Math.sin(TP * (this.hPh - 0.2)), 8));
@@ -397,7 +543,7 @@ const Engine = {
   async start(targets) {
     clearTimeout(this.stopTimer);
     if (!this.ctx) await this.init(); else await this.ctx.resume();
-    this.send(Object.assign({}, targets, { master: 0.8 }));
+    this.send(Object.assign({}, targets, { master: session.active ? 0.8 * Math.min(1, session.elapsed / 5 + 0.2) : 0.8 }));
     this.running = true;
   },
   stop() {
@@ -420,12 +566,12 @@ const RINGS = [
 RINGS.forEach((r, i) => { r.dir = 1; r.phase = -Math.PI / 2 + r.value * Math.PI * 2; r.limit = 0; r.limitSide = 0; r.moved = 0; r.rotation = 0; r.active = 0; r.grip = null; r.press = 0; r.teeth = i === 2 ? 36 : 60; });
 
 const map = {
-  beat: v => 0.5 + 3.5 * v,            // ring 01: drone binaural beat 0.5–4 Hz (delta → theta)
+  beat: v => 1 + 7.5 * v,              // ring 01: carrier beat 1–8.5 Hz (sub pair beats at half: locked 2:1)
   air:  v => v,                        // ring 02: air swells, sparse/dark → dense/lighter
   cluster: v => v,                     // ring 03: cluster presence 0–100 %
   bpm:  v => 30 + 30 * v               // ring 04 (centre): heartbeat 30–60 BPM
 };
-const targets = () => ({ beat: map.beat(RINGS[0].value), air: map.air(RINGS[1].value),
+const targets = () => ({ carrier: tuning.carrier, tune: tuning.tune, beat: map.beat(RINGS[0].value), air: map.air(RINGS[1].value),
                          cluster: map.cluster(RINGS[2].value), bpm: map.bpm(RINGS[3].value) });
 
 let stoppedAt = 0;
@@ -482,7 +628,7 @@ let lastDraw = 0, lastInteract = 0, restDim = 1;
    just outside the orbit, centred on the streak's head (it travels with the knob).
    Faint at rest, bright while turning; hidden in eyes-closed mode. */
 const valueText = [
-  t => `DRONE ${t.beat.toFixed(1)} Hz`,
+  t => `DRONE ${t.beat.toFixed(t.tune !== 1 ? 2 : 1)} Hz`,
   t => `AIR ${Math.round(t.air * 100)}%`,
   t => `CLUSTER ${Math.max(0, Math.min(7, Math.ceil(t.cluster * 7.2 - 0.05)))} / 7 VOICES`,
   t => `HEART ${Math.round(t.bpm)} BPM`
@@ -492,7 +638,7 @@ function arcLabel(r, idx, orbit, head) {
   const txt = valueText[idx](targets()) + (r.limit > 0.05 ? (r.limitSide > 0 ? '  ·  MAX' : '  ·  MIN') : '');
   // Hidden at rest: appears only while a finger is on this ring (and fades after).
   // On first load all four show for a few seconds so people learn what the rings are.
-  const intro = Math.max(0, Math.min(1, 5 - performance.now() / 1000)) * 0.6;
+  const intro = Math.max(0, Math.min(1, 5 - (performance.now() / 1000 - introStart))) * 0.6;
   const a = Math.max(r.press, r.moved, intro) * restDim;
   if (a < 0.02) return;
   g.save();
@@ -504,10 +650,11 @@ function arcLabel(r, idx, orbit, head) {
 }
 const reduceMotion = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
 function draw(now) {
+  if (mode === 'home') { const dt = Math.min(0.05, lastDraw ? now - lastDraw : 0.016); lastDraw = now; return drawHome(now, dt); }
   const dt = Math.min(0.05, lastDraw ? now - lastDraw : 0.016); lastDraw = now;
   // Eyes-closed mode: 20 s after the last touch while playing, everything but the
   // breathing core fades back; any touch brings it forward again.
-  const resting = playing && (now - lastInteract > 20);
+  const resting = mode === 'session' && playing && (now - lastInteract > 20);
   restDim += ((resting ? 0.25 : 1) - restDim) * Math.min(1, dt * 0.6);
   document.body.classList.toggle('rest', resting);
   g.setTransform(dpr, 0, 0, dpr, side * dpr / 2, side * dpr / 2);
@@ -653,7 +800,7 @@ function hexA(hex, a) {
 /* =========================================================================
    FRAME LOOP: breathing core + thud are phase-locked to the audio clock
    ========================================================================= */
-const BUILD = 'v16';
+const BUILD = 'v21';
 let shownErr = false;
 function report(msg) {
   if (shownErr) return; shownErr = true;
@@ -679,6 +826,7 @@ function frameBody(ms) {
     pulse = Math.max(0, pulse - 0.02); swell = Math.max(0, swell - 0.02); waveA = Math.max(0, waveA - 0.02);
   }
   draw(now);
+  sessionTick(Math.min(0.1, now - (frameBody.last || now))); frameBody.last = now;
   if (!reduceMotion) drawDust(now, 1 / 60);
   updateReadouts();
   }
@@ -703,6 +851,7 @@ function polar(e) {
 function ringAt(d) { return RINGS.findIndex(r => d >= r.hit[0] && d < r.hit[1]); }
 
 cv.addEventListener('pointerdown', e => {
+  if (mode === 'home') return homeDown(e);
   const { angle, dist } = polar(e), idx = ringAt(dist);
   if (idx < 0) return;
   cv.setPointerCapture(e.pointerId);
@@ -716,6 +865,7 @@ cv.addEventListener('pointerdown', e => {
 cv.addEventListener('pointermove', e => { try { onMove(e); } catch (err) { report(err.message); } });
 function onMove(e) {
   const p = pointers.get(e.pointerId); if (!p) return;
+  if (p.home) return homeMove(e, p);
   const { angle, dist } = polar(e);
   p.moved = Math.max(p.moved, Math.hypot(e.clientX - p.x, e.clientY - p.y));
   RINGS[p.idx].grip = angle;
@@ -730,6 +880,7 @@ function onMove(e) {
 function end(e) {
   const p = pointers.get(e.pointerId); if (!p) return;
   pointers.delete(e.pointerId);
+  if (p.home) return homeUp(e, p);
   RINGS[p.idx].active = Math.max(0, RINGS[p.idx].active - 1);
   if (!RINGS[p.idx].active) RINGS[p.idx].grip = null;
   if (Engine.send && !RINGS.some(q => q.active > 0)) Engine.send({ focus: -1 });
@@ -780,16 +931,272 @@ function emit(r, angle, w) {
    TRANSPORT + keyboard access
    ========================================================================= */
 let wakeLock = null;
+
+/* SESSIONS — intent presets + a length; the app plays an arc (from Male Wellness
+   "Layered Sub"): fade-in, slow build, peak at 80 %, resolve to a quiet residue, fade-out.
+   The arc works inside the sound; the rings stay where the preset (or you) put them. */
+const PRESETS = {                //   drone beat · air · cluster · heart   (ring values 0…1)
+  unwind: { name: 'UNWIND', v: [0.20, 0.55, 0.45, 0.40] },   // 2.5 Hz · open air · 42 BPM
+  deep:   { name: 'DEEP',   v: [0.07, 0.15, 0.30, 0.20] },   // 1.5 Hz · dark, close · 36 BPM
+  focus:  { name: 'FOCUS',  v: [1.00, 0.80, 0.65, 0.80] },   // 8.5 Hz · bright air · 54 BPM
+  night:  { name: 'NIGHT',  v: [0.00, 0.25, 0.20, 0.07] },   // 1 Hz · sparse · 32 BPM
+  // GROUND: Schumann 7.83 Hz beat on a 432-based drone (108 / 54 Hz), everything tuned to A = 432
+  ground: { name: 'GROUND', v: [0.910667, 0.35, 0.40, 0.30], carrier: 108, tune: 432 / 440 }   // 7.83 Hz · 39 BPM
+};
+let tuning = { carrier: 128, tune: 1 };              // default: 128 / 64 Hz pairs, A = 440
+const session = { intent: 'unwind', minutes: 20, elapsed: 0, active: false, lastSend: 0, done: false };
+let introStart = 0;
+const smooth01 = x => { x = Math.min(1, Math.max(0, x)); return x * x * (3 - 2 * x); };
+function arcForm(f) {            // 0 → build → 1 at 80 % → 0.12 residue at the end
+  return f < 0.8 ? smooth01(f / 0.8) : 1 - 0.88 * smooth01((f - 0.8) / 0.2);
+}
+function sessionTick(dt) {
+  if (!session.active || mode !== 'session') return;
+  if (playing) session.elapsed += dt;
+  const total = session.minutes * 60, f = session.elapsed / total;
+  const rem = Math.max(0, total - session.elapsed);
+  $('sess').textContent = `${PRESETS[session.intent].name}  ·  ${Math.floor(rem / 60)}:${String(Math.floor(rem % 60)).padStart(2, '0')}${playing ? '' : '  ·  PAUSED'}`;
+  const now = performance.now();
+  if (playing && Engine.send && now - session.lastSend > 400) {
+    session.lastSend = now;
+    const fadeLen = Math.min(60, 0.1 * total);
+    const lvl = 0.8 * Math.min(smooth01(session.elapsed / fadeLen), smooth01(rem / fadeLen));
+    Engine.send({ form: 0.5 * arcForm(f) + 0.25, master: lvl });        // form 0.25 … 0.75 around neutral
+  }
+  if (f >= 1 && !session.done) endSession(true);
+}
+function applyPreset(key) {
+  const P = PRESETS[key]; tuning = { carrier: P.carrier || 128, tune: P.tune || 1 };
+  PRESETS[key].v.forEach((v, i) => { const r = RINGS[i]; r.value = v; r.phase = -Math.PI / 2 + v * Math.PI * 2; r.dir = 1; });
+}
+function weeklyCount(add) {
+  try {
+    const wk = 7 * 864e5, now = Date.now();
+    let log = JSON.parse(localStorage.getItem('interstate.sessions') || '[]').filter(t => now - t < wk);
+    if (add) { log.push(now); localStorage.setItem('interstate.sessions', JSON.stringify(log)); }
+    return log.length;
+  } catch (e) { return 0; }
+}
+
+/* HOME — the same chakra language: an outer dial of states, a geared dial of
+   lengths, and the centre orb is BEGIN. Rings turn with the finger and settle
+   into the nearest position when released. */
+let mode = 'home';
+const STATES = [
+  { key: 'unwind', name: 'UNWIND', line: 'slow breath, open air',            color: '#2EE6D6' },
+  { key: 'deep',   name: 'DEEP',   line: 'dark, close, heavy low end',       color: '#9D5CFF' },
+  { key: 'focus',  name: 'FOCUS',  line: 'brighter air, steady pulse',       color: '#4A7BFF' },
+  { key: 'ground', name: 'GROUND', line: 'earth tone · 7.83 Hz beat · A = 432', color: '#4FD1A5' },
+  { key: 'night',  name: 'NIGHT',  line: 'near-silent, fading out',          color: '#D07CFF' }
+];
+STATES.forEach((st, i) => { st.a = -Math.PI / 2 + i * (2 * Math.PI / STATES.length); });
+// Length dial is a clock: 12 o'clock = 0 / 60, one full turn = 60 minutes.
+const minAngle = m => -Math.PI / 2 + (m / 60) * Math.PI * 2;
+const angleMin = a => { let m = (((a + Math.PI / 2) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI) / (2 * Math.PI) * 60; return m < 0.5 ? 60 : m; };
+const HOME = [
+  { kind: 'state',  band: [0.66, 0.80], hit: [0.60, 1.14], stops: STATES,  sel: 0, color: '#2EE6D6', color2: '#4A7BFF' },
+  { kind: 'length', band: [0.43, 0.55], hit: [0.36, 0.60], stops: null, sel: 0, color: '#4A7BFF', color2: '#9D5CFF' }
+];
+HOME.forEach(h => { h.phase = h.stops ? h.stops[h.sel].a : minAngle(session.minutes); h.target = h.phase; h.active = 0; h.dir = 1; h.press = 0; h.moved = 0; });
+let orbPress = 0, orbDown = false;
+const angDiff = (a, b) => { let d = a - b; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; return d; };
+function nearestStop(h, ang) {
+  let best = 0, bd = 9;
+  h.stops.forEach((st, i) => { const d = Math.abs(angDiff(ang, st.a)); if (d < bd) { bd = d; best = i; } });
+  return best;
+}
+function homeSelect(h, i) {
+  if (h.sel !== i) { h.sel = i; buzz(10); }
+  session.intent = STATES[i].key; h.color = STATES[i].color;
+  homeText();
+}
+function homeText() {
+  const st = STATES[HOME[0].sel];
+  $('sess').textContent = `${st.name}  ·  ${session.minutes} MIN`;
+  $('sess').style.color = st.color;
+  $('hint').textContent = `${st.line}`;
+}
+function drawHome(now, dt) {
+  g.setTransform(dpr, 0, 0, dpr, side * dpr / 2, side * dpr / 2);
+  g.globalCompositeOperation = 'source-over';
+  g.clearRect(-side, -side, side * 2, side * 2);
+  g.lineCap = 'round';
+  const anyActive = HOME.some(h => h.active > 0);
+  HOME.forEach((h, idx) => {
+    const act = h.active > 0;
+    h.press += ((act ? 1 : 0) - h.press) * 0.25;
+    h.moved = Math.max(0, h.moved - dt * 1.5);
+    if (!act) h.phase += angDiff(h.target, h.phase) * Math.min(1, dt * 7);    // settle into the stop
+    const orbit = ((h.band[0] + h.band[1]) / 2) * R;
+    const dim = anyActive && !act ? 0.35 : 1;
+    // faint orbit
+    g.shadowBlur = 0; g.lineWidth = 0.6; g.strokeStyle = hexA(h.color, (0.10 + 0.12 * h.press) * dim);
+    g.beginPath(); g.arc(0, 0, orbit, 0, Math.PI * 2); g.stroke();
+    // the length dial is a clock face: 60 minute teeth (longer every 5), lit from 12 o'clock to the hand
+    if (h.kind === 'length') {
+      const mNow = angleMin(h.phase + 1e-6), headA = h.phase;
+      for (let k = 0; k < 60; k++) {
+        const th = minAngle(k), five = k % 5 === 0, lit = k > 0 && k <= Math.round(mNow);
+        const r0 = orbit + 7, r1 = orbit + (five ? 15 : 11) + 3 * h.press;
+        g.lineWidth = five ? 1.1 : 0.7;
+        g.strokeStyle = hexA(h.color, (lit ? 0.55 + 0.3 * h.press : 0.14 + 0.2 * h.press) * dim);
+        g.beginPath(); g.moveTo(r0 * Math.cos(th), r0 * Math.sin(th)); g.lineTo(r1 * Math.cos(th), r1 * Math.sin(th)); g.stroke();
+      }
+      g.lineWidth = 1.2; g.strokeStyle = hexA(h.color, 0.35 * dim);
+      g.beginPath(); g.arc(0, 0, orbit, -Math.PI / 2, headA < -Math.PI / 2 ? headA + 2 * Math.PI : headA); g.stroke();
+      g.font = '500 9px "IBM Plex Mono", ui-monospace, Menlo, monospace';
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      [15, 30, 45, 60].forEach(q => {
+        const th = minAngle(q), lr = orbit - 13;
+        g.fillStyle = hexA('#8A8DB0', 0.55 * dim);
+        g.fillText(String(q), lr * Math.cos(th), lr * Math.sin(th));
+      });
+    }
+    // stops: a node and its name on the circumference
+    if (h.stops) h.stops.forEach((st, i) => {
+      const on = i === h.sel, col = h.kind === 'state' ? st.color : h.color;
+      const x = orbit * Math.cos(st.a), y = orbit * Math.sin(st.a);
+      g.shadowColor = col; g.shadowBlur = on ? 10 : 0;
+      g.fillStyle = hexA(col, (on ? 0.95 : 0.35) * dim);
+      g.beginPath(); g.arc(x, y, on ? 3.2 : 2, 0, Math.PI * 2); g.fill();
+      const lr = orbit + (h.kind === 'length' ? 24 : 18);
+      const lx = lr * Math.cos(st.a), ly = lr * Math.sin(st.a);
+      g.font = `500 ${h.kind === 'length' ? 11 : 10}px "IBM Plex Mono", ui-monospace, Menlo, monospace`;
+      g.textAlign = Math.abs(Math.cos(st.a)) < 0.3 ? 'center' : (Math.cos(st.a) > 0 ? 'left' : 'right');
+      g.textBaseline = Math.abs(Math.sin(st.a)) < 0.3 ? 'middle' : (Math.sin(st.a) > 0 ? 'top' : 'bottom');
+      g.shadowBlur = on ? 8 : 0;
+      g.fillStyle = hexA(on ? col : '#8A8DB0', (on ? 0.95 : 0.45) * dim);
+      g.fillText(h.kind === 'length' ? String(st.m) : st.name, lx, ly);
+    });
+    // the streak
+    g.globalCompositeOperation = 'lighter';
+    const tail = 1.1 + 0.6 * Math.max(h.press, h.moved), N = 30;
+    for (let i = 0; i < N; i++) {
+      const t0 = i / N, t1 = (i + 1) / N, a0 = h.phase - h.dir * tail * t0, a1 = h.phase - h.dir * tail * t1;
+      const fade = Math.pow(1 - t0, 1.8), col = t0 < 0.4 ? h.color : h.color2;
+      g.shadowBlur = 0; g.lineWidth = 10 * fade + 2; g.strokeStyle = hexA(col, 0.10 * fade * dim);
+      g.beginPath(); g.arc(0, 0, orbit, Math.min(a0, a1), Math.max(a0, a1)); g.stroke();
+      g.shadowColor = col; g.shadowBlur = 10 * fade; g.lineWidth = 0.6 + 2.4 * fade;
+      g.strokeStyle = hexA(col, Math.min(1, fade * (0.7 + 0.3 * h.press)) * dim);
+      g.beginPath(); g.arc(0, 0, orbit, Math.min(a0, a1), Math.max(a0, a1)); g.stroke();
+    }
+    const hx = orbit * Math.cos(h.phase), hy = orbit * Math.sin(h.phase), hr = 14 + 6 * h.press;
+    const hg = g.createRadialGradient(hx, hy, 0, hx, hy, hr);
+    hg.addColorStop(0, hexA('#FFFFFF', 0.8 * dim)); hg.addColorStop(0.25, hexA(h.color, 0.65 * dim)); hg.addColorStop(1, 'rgba(0,0,0,0)');
+    g.shadowBlur = 0; g.fillStyle = hg; g.beginPath(); g.arc(hx, hy, hr, 0, Math.PI * 2); g.fill();
+    g.globalCompositeOperation = 'source-over';
+  });
+  // the orb: BEGIN — breathes slowly on its own (the only idle motion)
+  orbPress += ((orbDown ? 1 : 0) - orbPress) * 0.25;
+  const st = STATES[HOME[0].sel], br = 0.5 + 0.5 * Math.sin(now * 0.9);
+  const rr = R * (0.27 + 0.012 * br) * (1 - 0.04 * orbPress);
+  const gr = g.createRadialGradient(0, 0, 0, 0, 0, rr);
+  gr.addColorStop(0.0, hexA('#C9A8FF', 0.30 + 0.12 * br + 0.2 * orbPress));
+  gr.addColorStop(0.45, hexA(st.color, 0.16 + 0.06 * br));
+  gr.addColorStop(0.8, hexA('#4A7BFF', 0.05));
+  gr.addColorStop(1.0, 'rgba(0,0,0,0)');
+  g.fillStyle = gr; g.beginPath(); g.arc(0, 0, rr, 0, Math.PI * 2); g.fill();
+  g.lineWidth = 0.7; g.strokeStyle = hexA(st.color, 0.35 + 0.3 * orbPress);
+  g.beginPath(); g.arc(0, 0, R * 0.19, 0, Math.PI * 2); g.stroke();
+  g.font = '500 11px "IBM Plex Mono", ui-monospace, Menlo, monospace';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.shadowColor = st.color; g.shadowBlur = 10;
+  g.fillStyle = hexA('#F2EDFF', 0.85 + 0.15 * orbPress);
+  const word = 'BEGIN', sp = 4; let w = 0; for (const c of word) w += g.measureText(c).width + sp; w -= sp;
+  let x0 = -w / 2; g.textAlign = 'left';
+  for (const c of word) { g.fillText(c, x0, 1); x0 += g.measureText(c).width + sp; }
+  g.shadowBlur = 0;
+  // motes
+  g.globalCompositeOperation = 'lighter';
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i], age = now - p.born;
+    if (age > p.life) { particles.splice(i, 1); continue; }
+    const t = age / p.life, th = p.angle + p.drift * age, rad = (p.r + 0.035 * age) * R, a = (1 - t) * (1 - t);
+    const x = rad * Math.cos(th), y = rad * Math.sin(th), col = t < 0.5 ? p.color : p.color2;
+    g.fillStyle = hexA(col, 0.10 * a); g.beginPath(); g.arc(x, y, p.size * 3.2, 0, Math.PI * 2); g.fill();
+    g.fillStyle = hexA(col, 0.55 * a); g.beginPath(); g.arc(x, y, p.size * (1 - 0.4 * t), 0, Math.PI * 2); g.fill();
+  }
+  g.globalCompositeOperation = 'source-over';
+}
+function homeRingAt(d) { return d < 0.36 ? 2 : HOME.findIndex(h => d >= h.hit[0] && d < h.hit[1]); }
+function homeDown(e) {
+  const { angle, dist } = polar(e), idx = homeRingAt(dist);
+  if (idx < 0) return;
+  cv.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, { home: true, idx, dist, last: angle, x: e.clientX, y: e.clientY, moved: 0, t: performance.now() });
+  if (idx === 2) orbDown = true; else HOME[idx].active++;
+  buzz(4);
+}
+function homeMove(e, p) {
+  const { angle, dist } = polar(e);
+  p.moved = Math.max(p.moved, Math.hypot(e.clientX - p.x, e.clientY - p.y));
+  if (p.idx === 2 || dist < 0.06) { p.last = angle; return; }
+  const h = HOME[p.idx], d = angDiff(angle, p.last); p.last = angle;
+  const nowMs = performance.now(), dt = Math.max(1 / 240, (nowMs - p.t) / 1000); p.t = nowMs;
+  h.dir = d > 0 ? 1 : -1; h.moved = 1;
+  emit(h, angle, d / dt);
+  if (h.kind === 'length') {                          // minutes: 1…60, stops at the ends
+    h.mins = Math.min(60, Math.max(1, (h.mins || session.minutes) + d / (2 * Math.PI) * 60));
+    h.phase = minAngle(h.mins);
+    const m = Math.round(h.mins);
+    if (m !== session.minutes) { session.minutes = m; buzz(m % 5 ? 4 : 10); homeText(); }
+    return;
+  }
+  h.phase += d;
+  homeSelect(h, nearestStop(h, h.phase));
+}
+function homeUp(e, p) {
+  if (p.idx === 2) { orbDown = false; if (p.moved < 12) beginSession(); return; }
+  const h = HOME[p.idx]; h.active = Math.max(0, h.active - 1);
+  if (h.kind === 'length') {
+    if (p.moved < 8) session.minutes = Math.max(1, Math.round(angleMin(polar(e).angle)));   // tap = set the hand there
+    h.mins = session.minutes; homeText();
+    const d = angDiff(minAngle(session.minutes), h.phase); if (d) h.dir = d > 0 ? 1 : -1;
+    h.target = h.phase + d;
+    return;
+  }
+  const i = p.moved < 8 ? nearestStop(h, polar(e).angle) : nearestStop(h, h.phase);   // a tap picks the stop you touched
+  homeSelect(h, i);
+  const d = angDiff(h.stops[i].a, h.phase); if (d) h.dir = d > 0 ? 1 : -1;
+  h.target = h.phase + d;
+}
+function showHome(msg) {
+  mode = 'home';
+  document.body.classList.remove('rest');
+  $('end').hidden = true;
+  homeText();
+  const n = weeklyCount(false);
+  $('weekly').textContent = (msg || (n ? `${n} session${n > 1 ? 's' : ''} this week` : 'Headphones on')) + '  ·  v21';
+}
+async function beginSession() {
+  applyPreset(session.intent);
+  session.elapsed = 0; session.active = true; session.done = false; session.lastSend = 0;
+  mode = 'session';
+  $('sess').style.color = ''; $('end').hidden = false; $('weekly').textContent = ' ';
+  $('hint').textContent = 'Tap the centre to pause. Turn any ring to tune.';
+  introStart = performance.now() / 1000;
+  if (!playing) await toggle();
+  if (Engine.send) Engine.send(Object.assign(targets(), { form: 0.25, master: 0 }));   // the arc does the fade-in
+}
+function endSession(completed) {
+  session.done = true; session.active = false;
+  if (playing) toggle();
+  if (completed) weeklyCount(true);
+  setTimeout(() => showHome(completed ? `Session complete  ·  ${session.minutes} min` : null), completed ? 2500 : 600);
+}
+$('end').addEventListener('click', () => endSession(false));
+showHome();
+
 async function toggle() {
   if (playing) {
     Engine.stop(); playing = false; stoppedAt = performance.now();
-    $('hint').textContent = 'Tap the centre to begin.';
+    if (session.active) $('hint').textContent = 'Paused. Tap the centre to continue.';
     try { wakeLock && wakeLock.release(); } catch (e) {} wakeLock = null;
   } else {
     playing = true; lastPhase = 0; stoppedAt = 0;
     try { await Engine.start(targets()); }
     catch (err) { playing = false; $('hint').textContent = 'Audio could not start. Tap the centre again.'; return; }
-    $('hint').textContent = 'Press a ring and turn it.';
+    $('hint').textContent = 'Tap the centre to pause. Turn any ring to tune.';
     lastInteract = performance.now() / 1000;
     buzz(20);
     try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
